@@ -140,7 +140,7 @@ This service runs a dedicated embedding model using the high-performance vLLM se
     The vLLM server needs a Hugging Face token to download the model. Replace `YOUR_HF_TOKEN` with your actual token from [https://huggingface.co/settings/tokens](https://huggingface.co/settings/tokens).
 
     ```bash
-    kubectl create secret generic hf-token-secret --from-literal=token='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' -n rag
+    kubectl create secret generic hf-token-secret --from-literal=token='xxx' -n rag
     ```
 
 2.  **Build and Push the Embedding Service Image:**
