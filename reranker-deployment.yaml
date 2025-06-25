@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: embedding-model-cache-pvc
+  name: reranker-model-cache-pvc
   namespace: rag
 spec:
   accessModes:
@@ -9,57 +9,47 @@ spec:
   resources:
     requests:
       storage: 50Gi # Adjust size based on your model cache needs
-  # storageClassName: "your-storage-class" # Uncomment and specify if you have a specific storage class
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: embedding-deployment
+  name: reranker-deployment
   namespace: rag
   labels:
-    app: embedding-service
+    app: reranker-service
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: embedding-service
+      app: reranker-service
   template:
     metadata:
       labels:
-        app: embedding-service
+        app: reranker-service
     spec:
       volumes:
       - name: cache-volume
         persistentVolumeClaim:
-          claimName: embedding-model-cache-pvc
+          claimName: reranker-model-cache-pvc
       - name: dshm
         emptyDir:
           medium: Memory
       containers:
-      - name: embedding-container
+      - name: reranker-container
         image: ghcr.nju.edu.cn/sasha0552/vllm:latest
-        # swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/vllm/vllm-openai:v0.9.1
-        # docker.1ms.run/vllm/vllm-openai:latest
         args: [
-          "--model", "BAAI/bge-small-en-v1.5",
+          "--model", "BAAI/bge-reranker-base",
           "--trust-remote-code",
           "--port", "8000"
         ]
         env:
         - name: HF_ENDPOINT
           value: "https://hf-mirror.com"
-        # The BGE model is public, so a token is not required and can sometimes
-        # cause issues with public mirrors. We are commenting it out.
-        # - name: HUGGING_FACE_HUB_TOKEN
-        #   valueFrom:
-        #     secretKeyRef:
-        #       name: hf-token-secret
-        #       key: token
         ports:
         - containerPort: 8000
         resources:
           limits:
-            nvidia.com/gpu: "1" # Requesting 1 GPU
+            nvidia.com/gpu: "1"
           requests:
             nvidia.com/gpu: "1"
         volumeMounts:
@@ -67,23 +57,23 @@ spec:
           name: cache-volume
         - mountPath: /dev/shm
           name: dshm
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 8000
-          initialDelaySeconds: 60
-          periodSeconds: 15
-          timeoutSeconds: 5
-          failureThreshold: 3
+        # readinessProbe:
+        #   httpGet:
+        #     path: /health
+        #     port: 8000
+        #   initialDelaySeconds: 60
+        #   periodSeconds: 15
+        #   timeoutSeconds: 5
+        #   failureThreshold: 3
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: embedding-service
+  name: reranker-service
   namespace: rag
 spec:
   selector:
-    app: embedding-service
+    app: reranker-service
   ports:
   - name: http
     protocol: TCP

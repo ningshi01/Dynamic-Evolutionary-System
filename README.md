@@ -172,7 +172,193 @@ This service runs a dedicated embedding model using the high-performance vLLM se
     kubectl logs -f -l app=embedding-service -n rag
     ```
 
-### 7. Accessing the System via the API Gateway
+### 7. 部署 Reranker 模型服务
+
+本服务用于提供重排序（rerank）能力，基于 BAAI/bge-reranker-base 模型，依赖 GPU 资源。
+
+1.  **构建并推送 Reranker 服务镜像：**
+    
+    （如需自定义镜像，可参考 embedding 服务的构建方法，默认可直接使用预设镜像）
+
+2.  **部署 Reranker 服务：**
+    
+    ```bash
+    kubectl apply -f reranker-deployment.yaml
+    ```
+
+3.  **检查服务状态：**
+    
+    ```bash
+    kubectl get pods -l app=reranker-service -n rag
+    kubectl logs -f -l app=reranker-service -n rag
+    ```
+
+#### reranker 服务测试方法
+
+1. 查询 NodePort：
+
+```bash
+kubectl get svc reranker-service -n rag
+```
+
+2. 发送 rerank 请求（OpenAI API 格式）：
+
+```bash
+curl -X POST http://<NodeIP>:<NodePort>/v1/rerank \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "BAAI/bge-reranker-base",
+    "query": "中国的首都是哪里？",
+    "documents": [
+      "北京是中国的首都。",
+      "上海是中国最大的城市。",
+      "广州是中国南方的重要城市。"
+    ]
+  }'
+```
+
+返回结果会包含每个 document 的分数和排序。
+
+### 8. 部署 LLM 模型服务
+
+本服务基于 Qwen/Qwen3-0.6B 模型，提供核心的语言模型能力。
+
+1.  **部署 LLM 服务：**
+    
+    ```bash
+    kubectl apply -f llm-deployment.yaml
+    ```
+
+2.  **检查服务状态：**
+    
+    ```bash
+    kubectl get pods -l app=llm-service -n rag
+    kubectl logs -f -l app=llm-service -n rag
+    ```
+
+#### LLM 服务测试方法
+
+1.  **查询 NodePort：**
+    
+    ```bash
+    kubectl get svc llm-service -n rag
+    ```
+
+2.  **发送聊天补全请求（OpenAI API 格式）：**
+    
+    ```bash
+    curl -X POST http://<NodeIP>:<NodePort>/v1/chat/completions \
+      -H "Content-Type: application/json" \
+      -d '{
+        "model": "Qwen/Qwen3-0.6B",
+        "messages": [
+          {"role": "user", "content": "你好，请介绍一下你自己。"}
+        ]
+      }'
+    ```
+
+### 9. 部署 Milvus 服务
+
+Milvus 是向量数据库，用于存储和检索向量数据。本部署会自动连接已存在的 minio 服务（minio-service:9000），无需重复部署 MinIO。
+
+1. **部署 Milvus 及其依赖（etcd）：**
+
+```bash
+kubectl apply -f milvus-deployment.yaml
+```
+
+2. **检查服务状态：**
+
+```bash
+kubectl get pods -l app=milvus-etcd -n rag
+kubectl get pods -l app=milvus-standalone -n rag
+kubectl logs -f -l app=milvus-standalone -n rag
+```
+
+3. **服务端口说明：**
+- gRPC 端口：19530（用于 SDK/客户端连接）
+- HTTP 端口：9091（用于健康检查和监控）
+
+4. **MinIO 连接说明：**
+Milvus 会自动通过环境变量连接 rag 命名空间下的 minio-service，访问密钥为 minioadmin/minioadmin。
+
+如需外部访问 Milvus，可通过 NodePort 方式连接上述端口。
+
+#### Milvus 服务测试方法
+
+你可以通过 `pymilvus` SDK 来测试 Milvus 服务。以下提供两种测试方法：
+
+**方法一：在 Kubernetes 集群内部测试（推荐）**
+
+这是最直接可靠的方法，它会在 `rag` 命名空间下启动一个临时的 Python Pod，安装 `pymilvus` 并尝试连接 Milvus。
+
+执行以下命令：
+
+```bash
+kubectl run -it --rm --image=python:3.9-slim --restart=Never milvus-test -n rag -- /bin/bash -c "pip install pymilvus && python -c \"
+import pymilvus
+try:
+    pymilvus.connections.connect(alias='default', host='milvus-service', port='19530')
+    print('Successfully connected to Milvus!')
+    print(f'Existing collections: {pymilvus.utility.list_collections()}')
+except Exception as e:
+    print(f'Failed to connect: {e}')
+finally:
+    if 'default' in pymilvus.connections.list_connections():
+        pymilvus.connections.disconnect('default')
+\""
+```
+如果看到 `Successfully connected to Milvus!` 和一个集合列表（可能为空），说明 Milvus 服务正常。
+
+**方法二：在本地机器上测试（通过 NodePort）**
+
+1.  **安装 `pymilvus` 客户端：**
+    
+    ```bash
+    pip install pymilvus
+    ```
+
+2.  **获取连接信息：**
+    
+    *   获取任一 Kubernetes节点的 IP 地址（`EXTERNAL-IP` 或 `INTERNAL-IP`）。
+        ```bash
+        kubectl get nodes -o wide
+        ```
+    *   获取 Milvus gRPC 服务的 NodePort。
+        ```bash
+        kubectl get svc milvus-service -n rag
+        ```
+        记下 `19530` 对应的端口号（例如 `3xxxx`）。
+
+3.  **创建并运行测试脚本：**
+    
+    创建一个名为 `test_milvus.py` 的文件，内容如下，并将 `<NodeIP>` 和 `<NodePort>` 替换为上一步获取的值。
+    
+    ```python
+    import pymilvus
+    
+    MILVUS_HOST = "<NodeIP>"       # 替换为你的节点 IP
+    MILVUS_PORT = "<NodePort>"   # 替换为 Milvus 的 NodePort
+    
+    try:
+        print(f"Connecting to Milvus at {MILVUS_HOST}:{MILVUS_PORT}...")
+        pymilvus.connections.connect(alias='default', host=MILVUS_HOST, port=str(MILVUS_PORT))
+        print("Successfully connected to Milvus!")
+        print(f"Existing collections: {pymilvus.utility.list_collections()}")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    finally:
+        if 'default' in pymilvus.connections.list_connections():
+            pymilvus.connections.disconnect('default')
+            print("Disconnected from Milvus.")
+    ```
+    
+    运行脚本：
+    ```bash
+    python test_milvus.py
+    ```
+
+### 10. Accessing the System via the API Gateway
 
 The **API Gateway** is the primary entry point to the system, exposed via `NodePort`. The other services (`fileservice`, `parser-service`) are now considered internal components.
 
@@ -238,6 +424,6 @@ For easier debugging, some internal services are temporarily exposed via `NodePo
       -H "Content-Type: application/json" \
       -d '{
         "input": "This is a test sentence.",
-        "model": "BAAI/bge-large-en-v1.5"
+        "model": "BAAI/bge-small-en-v1.5"
       }'
     ``` 
