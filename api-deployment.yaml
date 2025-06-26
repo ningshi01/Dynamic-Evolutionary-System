@@ -23,6 +23,8 @@ spec:
           value: "http://fileservice-service"
         - name: PARSER_SERVICE_URL
           value: "http://parser-service"
+        - name: RETRIEVER_SERVICE_URL
+          value: "http://retriever-service"
 ---
 apiVersion: v1
 kind: Service

@@ -1,5 +1,6 @@
 import os
 import httpx
+import logging
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -32,6 +33,10 @@ COLLECTION_NAME_PREFIX = "rag_collection_"
 
 app = FastAPI(title="RAG Retriever Service")
 
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # --- Pydantic Models ---
 class CreateCollectionRequest(BaseModel):
     collection_name: str = Field(..., description="Name of the collection to create. Will be prefixed.")
@@ -61,10 +66,17 @@ def shutdown_event():
     connections.disconnect("default")
 
 # --- LangChain and Service Components ---
+
+# Configure a custom httpx client with a longer timeout for embedding calls
+# This is crucial for handling larger documents that result in many chunks.
+embedding_client = httpx.AsyncClient(timeout=180.0) # 3-minute timeout
+
 embeddings = OpenAIEmbeddings(
     model=EMBEDDING_MODEL,
     openai_api_base=f"{EMBEDDING_SERVICE_URL}/v1",
     openai_api_key="dummy-key",
+    # Set a long timeout for embedding many chunks from a large file.
+    request_timeout=180.0,
 )
 
 llm = ChatOpenAI(
@@ -134,7 +146,8 @@ async def add_documents(request: AddDocumentsRequest):
         ids = await vector_store.aadd_texts(texts=request.documents, metadatas=request.metadatas)
         return {"message": f"Added {len(ids)} documents to '{full_collection_name}'.", "ids": ids}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Failed to add documents to {full_collection_name}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
 
 @app.post("/rag_generate")
 async def rag_generate(request: RAGRequest) -> StreamingResponse:

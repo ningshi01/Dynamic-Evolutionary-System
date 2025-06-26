@@ -1,6 +1,6 @@
 import os
 import httpx
-from fastapi import FastAPI, UploadFile, File, Request, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, Request, HTTPException, Query, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 
 app = FastAPI()
@@ -8,6 +8,7 @@ app = FastAPI()
 # Service URLs from environment variables, with defaults for Kubernetes service names
 FILE_SERVICE_URL = os.getenv("FILE_SERVICE_URL", "http://fileservice-service")
 PARSER_SERVICE_URL = os.getenv("PARSER_SERVICE_URL", "http://parser-service")
+RETRIEVER_SERVICE_URL = os.getenv("RETRIEVER_SERVICE_URL", "http://retriever-service")
 
 @app.get("/")
 def read_root():
@@ -100,6 +101,68 @@ async def parse_file(file_name: str):
             raise HTTPException(status_code=503, detail=f"Error calling parser service: {exc}")
         except httpx.HTTPStatusError as exc:
             raise HTTPException(status_code=exc.response.status_code, detail=exc.response.json())
+
+# 3. End-to-end processing endpoint
+@app.post("/add_file_to_collection")
+async def add_file_to_collection(
+    collection_name: str = Form(...),
+    create_collection_if_not_exists: bool = Form(True),
+    file: UploadFile = File(...)
+):
+    """
+    Automated pipeline: Upload -> Parse -> Store in Vector DB.
+    """
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        # Step 0 (Optional): Create collection if it does not exist
+        if create_collection_if_not_exists:
+            try:
+                await client.post(
+                    f"{RETRIEVER_SERVICE_URL}/create_collection",
+                    json={"collection_name": collection_name}
+                )
+            except httpx.HTTPStatusError as exc:
+                # 409 Conflict means the collection already exists, which is fine.
+                if exc.response.status_code != 409:
+                    raise HTTPException(
+                        status_code=exc.response.status_code,
+                        detail=f"Error creating collection: {exc.response.text}"
+                    )
+
+        # Step 1: Upload file to MinIO via fileservice
+        try:
+            upload_files = {'file': (file.filename, await file.read(), file.content_type)}
+            upload_response = await client.post(f"{FILE_SERVICE_URL}/upload", files=upload_files)
+            upload_response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=503, detail=f"Error calling file service: {exc}")
+
+        # Step 2: Parse the file into chunks via parser-service
+        try:
+            parse_response = await client.post(f"{PARSER_SERVICE_URL}/parse/{file.filename}")
+            parse_response.raise_for_status()
+            chunks = parse_response.json().get("chunks", [])
+            if not chunks:
+                return {"message": "File uploaded but no content was parsed.", "file_name": file.filename}
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=503, detail=f"File uploaded, but error calling parser service: {exc}")
+
+        # Step 3: Add parsed chunks to Milvus via retriever-service
+        try:
+            add_docs_response = await client.post(
+                f"{RETRIEVER_SERVICE_URL}/add_documents",
+                json={"collection_name": collection_name, "documents": chunks}
+            )
+            add_docs_response.raise_for_status()
+            add_docs_result = add_docs_response.json()
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=503, detail=f"File parsed, but error calling retriever service: {exc}")
+
+    return {
+        "message": "File processed and added to collection successfully.",
+        "file_name": file.filename,
+        "chunks_generated": len(chunks),
+        "retriever_response": add_docs_result
+    }
 
 if __name__ == "__main__":
     import uvicorn

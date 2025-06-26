@@ -376,7 +376,20 @@ For easier debugging, `fileservice-service` and `parser-service` are currently s
 
 All requests should now go through the API Gateway.
 
-- **`POST /upload`**
+- **`POST /add_file_to_collection`** (Automated Workflow)
+  - This is the primary endpoint for adding knowledge to the system. It automates the upload -> parse -> store pipeline.
+  - **Form Data:**
+    - `file`: The document file to process.
+    - `collection_name`: The name of the knowledge base to add the document to.
+    - `create_collection_if_not_exists`: `true` (default) or `false`.
+  - **Example using curl:**
+    ```bash
+    curl -X POST http://<your-node-ip>:<api-gateway-node-port>/add_file_to_collection \
+      -F "file=@/path/to/your/document.txt" \
+      -F "collection_name=my_knowledge_base"
+    ```
+
+- **`POST /upload`** (Manual Step)
   - Upload a file. To automatically trigger parsing, add the `?parse=true` query parameter.
   - **Example (Upload only):**
     ```bash
@@ -518,7 +531,20 @@ For easier debugging, `fileservice-service` and `parser-service` are currently s
 
 All requests should now go through the API Gateway.
 
-- **`POST /upload`**
+- **`POST /add_file_to_collection`** (Automated Workflow)
+  - This is the primary endpoint for adding knowledge to the system. It automates the upload -> parse -> store pipeline.
+  - **Form Data:**
+    - `file`: The document file to process.
+    - `collection_name`: The name of the knowledge base to add the document to.
+    - `create_collection_if_not_exists`: `true` (default) or `false`.
+  - **Example using curl:**
+    ```bash
+    curl -X POST http://<your-node-ip>:<api-gateway-node-port>/add_file_to_collection \
+      -F "file=@/path/to/your/document.txt" \
+      -F "collection_name=my_knowledge_base"
+    ```
+
+- **`POST /upload`** (Manual Step)
   - Upload a file. To automatically trigger parsing, add the `?parse=true` query parameter.
   - **Example (Upload only):**
     ```bash
