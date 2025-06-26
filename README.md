@@ -427,3 +427,145 @@ For easier debugging, some internal services are temporarily exposed via `NodePo
         "model": "BAAI/bge-small-en-v1.5"
       }'
     ``` 
+
+### 11. 部署 RAG 检索服务
+
+这个服务是整个 RAG 系统的核心，它基于 LangChain 构建，负责编排 embedding, reranker, llm 和 milvus 服务，实现完整的检索增强生成流程。
+
+1.  **构建并推送检索服务镜像：**
+    
+    ```bash
+    docker build -t crater-harbor.act.buaa.edu.cn/user-liujh24/rag-retriever-service:latest -f retriever.Dockerfile .
+    docker push crater-harbor.act.buaa.edu.cn/user-liujh24/rag-retriever-service:latest
+    ```
+
+2.  **部署服务：**
+    
+    ```bash
+    kubectl apply -f retriever-deployment.yaml
+    ```
+
+3.  **检查服务状态：**
+    
+    ```bash
+    kubectl get pods -l app=retriever-service -n rag
+    kubectl logs -f -l app=retriever-service -n rag
+    ```
+
+#### 检索服务测试方法
+
+你可以通过 `curl` 调用其 API 来测试整个 RAG 流程。
+
+1.  **获取服务 NodePort：**
+    
+    ```bash
+    kubectl get svc retriever-service -n rag
+    ```
+
+2.  **第一步：创建知识库（Collection）**
+    
+    ```bash
+    curl -X POST http://<NodeIP>:<NodePort>/create_collection \
+      -H "Content-Type: application/json" \
+      -d '{
+        "collection_name": "my_knowledge_base"
+      }'
+    ```
+
+3.  **第二步：向知识库添加文档**
+    
+    ```bash
+    curl -X POST http://<NodeIP>:<NodePort>/add_documents \
+      -H "Content-Type: application/json" \
+      -d '{
+        "collection_name": "my_knowledge_base",
+        "documents": [
+          "The Eiffel Tower is located in Paris, France.",
+          "The capital of Japan is Tokyo.",
+          "The Great Wall of China is one of the seven wonders of the world."
+        ]
+      }'
+    ```
+
+4.  **第三步：执行 RAG 生成**
+    
+    ```bash
+    curl -N -X POST http://<NodeIP>:<NodePort>/rag_generate \
+      -H "Content-Type: application/json" \
+      -d '{
+        "collection_name": "my_knowledge_base",
+        "query": "Where is the Eiffel Tower?"
+      }'
+    ```
+    
+    `-N` 参数用于接收流式响应。
+
+### 12. 访问系统入口（API Gateway）
+
+The **API Gateway** is the primary entry point to the system, exposed via `NodePort`. The other services (`fileservice`, `parser-service`) are now considered internal components.
+
+To find the port for the **API Gateway**, run:
+```bash
+kubectl get svc api-service -n rag
+```
+The main API Base URL for the entire system is `http://<your-node-ip>:<api-gateway-node-port>`.
+
+### Architecture Note (Security Improvement)
+
+For easier debugging, `fileservice-service` and `parser-service` are currently set to `NodePort`. In a production environment, you should change their type back to `ClusterIP` in their respective `.yaml` files, so they are not directly exposed to the internet. The API Gateway would be the only externally accessible component.
+
+## API Endpoints (via API Gateway)
+
+All requests should now go through the API Gateway.
+
+- **`POST /upload`**
+  - Upload a file. To automatically trigger parsing, add the `?parse=true` query parameter.
+  - **Example (Upload only):**
+    ```bash
+    curl -X POST -F "file=@/path/to/your/file.txt" http://<your-node-ip>:<api-gateway-node-port>/upload
+    ```
+  - **Example (Upload and Parse):**
+    ```bash
+    curl -X POST -F "file=@/path/to/your/file.txt" "http://<your-node-ip>:<api-gateway-node-port>/upload?parse=true"
+    ```
+
+- **`GET /download/{file_name}`**
+  - Download a file.
+  - **Example:**
+    ```bash
+    curl http://<your-node-ip>:<api-gateway-node-port>/download/file.txt -o downloaded_file.txt
+    ```
+
+- **`DELETE /delete/{file_name}`**
+  - Delete a file.
+  - **Example:**
+    ```bash
+    curl -X DELETE http://<your-node-ip>:<api-gateway-node-port>/delete/file.txt
+    ```
+
+- **`POST /parse/{file_name}`**
+  - Manually trigger parsing for a file that already exists in MinIO.
+  - **Example:**
+    ```bash
+    curl -X POST http://<your-node-ip>:<api-gateway-node-port>/parse/test.txt
+    ```
+
+## Internal Service Testing
+## Service Testing (Debug Mode)
+
+For easier debugging, some internal services are temporarily exposed via `NodePort`.
+
+**Test the Embedding Service:**
+1.  Find the port assigned to the embedding service:
+    ```bash
+    kubectl get svc embedding-service -n rag
+    ```
+2.  In a new terminal, send a request to the `/v1/embeddings` endpoint. Replace `<your-node-ip>` and `<embedding-node-port>` with the correct values.
+    ```bash
+    curl http://<your-node-ip>:<embedding-node-port>/v1/embeddings \
+      -H "Content-Type: application/json" \
+      -d '{
+        "input": "This is a test sentence.",
+        "model": "BAAI/bge-small-en-v1.5"
+      }'
+    ``` 

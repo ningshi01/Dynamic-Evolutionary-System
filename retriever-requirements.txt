@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+langchain
+langchain-core
+langchain-community
+langchain-openai
+pymilvus
+httpx
+python-dotenv 
