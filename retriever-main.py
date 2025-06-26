@@ -27,7 +27,7 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL_NAME")
 RERANKER_MODEL = os.getenv("RERANKER_MODEL_NAME")
 LLM_MODEL = os.getenv("LLM_MODEL_NAME")
 
-EMBEDDING_DIM = 768
+EMBEDDING_DIM = 384 
 COLLECTION_NAME_PREFIX = "rag_collection_"
 
 app = FastAPI(title="RAG Retriever Service")
