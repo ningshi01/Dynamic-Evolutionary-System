@@ -1,3 +1,6 @@
 fastapi
 uvicorn
-minio 
+minio
+transformers
+torch
+tiktoken 
