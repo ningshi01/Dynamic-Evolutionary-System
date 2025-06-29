@@ -19,6 +19,8 @@ spec:
         ports:
         - containerPort: 8000
         env:
+        - name: HF_ENDPOINT
+          value: "https://hf-mirror.com"
         - name: MINIO_ENDPOINT
           value: "minio-service:9000"
         - name: MINIO_ACCESS_KEY

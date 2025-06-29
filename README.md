@@ -1,6 +1,121 @@
-# MinIO-based File Storage Service for Kubernetes
+# RAG System on Kubernetes
 
-This project provides a complete setup for deploying a MinIO object storage server on Kubernetes, along with a Python-based file service to handle file uploads, downloads, and deletions.
+This project provides a complete, multi-service RAG (Retrieval-Augmented Generation) system designed to run on Kubernetes. It includes services for file storage (MinIO), document parsing, text embedding, reranking, language model serving (LLM), and a unified API Gateway.
+
+## High-Level Architecture
+
+1.  **API Gateway (`api-service`)**: The single entry point for all external requests.
+2.  **File Service (`fileservice`)**: Handles file uploads and downloads to and from MinIO.
+3.  **Parser Service (`parser-service`)**: Splits documents into text chunks.
+4.  **Retriever Service (`retriever-service`)**: The core orchestration layer. It communicates with the embedding, reranker, and LLM models, and manages vector storage in Milvus.
+5.  **Model Services (`embedding`, `reranker`, `llm`)**: Dedicated, GPU-powered services running models with vLLM for high performance.
+6.  **Vector Database (`milvus`)**: Stores and indexes document vectors for fast retrieval.
+7.  **Object Storage (`minio`)**: Stores the original source documents.
+
+## Deployment
+
+Please refer to the individual `*.yaml` files for deployment instructions for each component. Ensure you build and push the Docker images for `api-service`, `fileservice`, `parser-service`, and `retriever-service` to a registry accessible by your Kubernetes cluster before applying the manifests.
+
+## System API Endpoints (via API Gateway)
+
+All interactions with the RAG system should go through the **API Gateway**. It provides a clean, high-level interface for managing knowledge bases and performing queries.
+
+First, find the NodePort for the API Gateway:
+```bash
+kubectl get svc api-service -n rag
+```
+Use the returned IP and port for all the following requests (`http://<your-node-ip>:<api-gateway-node-port>`).
+
+---
+
+### 1. Knowledge Base Management
+
+#### Create a Knowledge Base
+
+Creates a new, empty knowledge base (a "collection" in Milvus).
+
+- **Endpoint**: `POST /collections`
+- **Body**:
+  ```json
+  {
+    "collection_name": "my_new_kb"
+  }
+  ```
+- **Example:**
+  ```bash
+  curl -X POST http://<api-gateway-url>/collections \
+    -H "Content-Type: application/json" \
+    -d '{"collection_name": "my_new_kb"}'
+  ```
+
+#### Delete a Knowledge Base
+
+Permanently deletes a knowledge base and all its content.
+
+- **Endpoint**: `DELETE /collections/{collection_name}`
+- **Example:**
+  ```bash
+  curl -X DELETE http://<api-gateway-url>/collections/my_new_kb
+  ```
+
+---
+
+### 2. Adding Content
+
+#### Add a File to a Knowledge Base
+
+This is the main pipeline for adding new information. It automatically handles file upload, text splitting, embedding, and storage.
+
+- **Endpoint**: `POST /add_file_to_collection`
+- **Request Type**: `multipart/form-data`
+- **Form Fields**:
+  - `file`: The document to be added (e.g., `.txt`, `.md`).
+  - `collection_name`: The target knowledge base.
+- **Example:**
+  ```bash
+  curl -X POST http://<api-gateway-url>/add_file_to_collection \
+    -F "file=@/path/to/your/document.txt" \
+    -F "collection_name=my_new_kb"
+  ```
+
+---
+
+### 3. Asking Questions (RAG)
+
+#### Get a Chat Completion
+
+Ask a question against a specific knowledge base and get a RAG-powered answer. This endpoint is designed to be compatible with the OpenAI Chat Completions API format.
+
+- **Endpoint**: `POST /chat/completions`
+- **Body**:
+  - `model`: (Required) The name of the knowledge base to query (e.g., `"my_new_kb"`).
+  - `messages`: A list of messages, following the OpenAI format. The content of the last "user" role message is used as the query.
+  - `stream`: (Optional) Set to `true` for a streaming response. Defaults to `false`.
+- **Example (Non-Streaming):**
+  ```bash
+  curl -X POST http://<api-gateway-url>/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+      "model": "my_new_kb",
+      "messages": [
+        {"role": "user", "content": "What is the main topic of the document?"}
+      ],
+      "stream": false
+    }'
+  ```
+
+- **Example (Streaming):**
+  ```bash
+  curl -N -X POST http://<api-gateway-url>/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+      "model": "my_new_kb",
+      "messages": [
+        {"role": "user", "content": "Summarize the document in three bullet points."}
+      ],
+      "stream": true
+    }'
+  ```
 
 ## Project Structure
 
@@ -113,12 +228,12 @@ This service acts as the main entry point for the entire RAG system.
 
 1.  **Build the API gateway image:**
     ```bash
-    docker build -t crater-harbor.act.buaa.edu.cn/user-liujh24/minio-api-gateway:latest -f api.Dockerfile .
+    docker build -t crater-harbor.act.buaa.edu.cn/user-liujh24/rag-api-gateway:latest -f api.Dockerfile .
     ```
 
 2.  **Push the API gateway image:**
     ```bash
-    docker push crater-harbor.act.buaa.edu.cn/user-liujh24/minio-api-gateway:latest
+    docker push crater-harbor.act.buaa.edu.cn/user-liujh24/rag-api-gateway:latest
     ```
 
 3.  **Deploy the API gateway service:**

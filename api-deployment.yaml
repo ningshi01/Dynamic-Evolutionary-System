@@ -14,8 +14,8 @@ spec:
         app: api-gateway
     spec:
       containers:
-      - name: api-gateway
-        image: crater-harbor.act.buaa.edu.cn/user-liujh24/minio-api-gateway:latest # <-- IMPORTANT: Replace with your image
+      - name: api-gateway-container
+        image: crater-harbor.act.buaa.edu.cn/user-liujh24/rag-api-gateway:latest # <-- IMPORTANT: Replace with your image
         ports:
         - containerPort: 8000
         env:

@@ -28,7 +28,7 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL_NAME")
 RERANKER_MODEL = os.getenv("RERANKER_MODEL_NAME")
 LLM_MODEL = os.getenv("LLM_MODEL_NAME")
 
-EMBEDDING_DIM = 384 
+EMBEDDING_DIM = 1024 
 COLLECTION_NAME_PREFIX = "rag_collection_"
 
 app = FastAPI(title="RAG Retriever Service")
@@ -127,6 +127,23 @@ def create_collection(request: CreateCollectionRequest):
     schema = CollectionSchema(fields, "Document collection for RAG")
     Collection(name=full_collection_name, schema=schema)
     return {"message": f"Collection '{full_collection_name}' created successfully."}
+
+@app.delete("/collections/{collection_name}", status_code=200)
+def delete_collection(collection_name: str):
+    """
+    Deletes a collection from Milvus.
+    """
+    full_collection_name = f"{COLLECTION_NAME_PREFIX}{collection_name}"
+    if not utility.has_collection(full_collection_name):
+        raise HTTPException(status_code=404, detail=f"Collection '{full_collection_name}' not found.")
+    
+    try:
+        utility.drop_collection(full_collection_name)
+        logger.info(f"Collection '{full_collection_name}' deleted successfully.")
+        return {"message": f"Collection '{full_collection_name}' deleted successfully."}
+    except Exception as e:
+        logger.error(f"Failed to delete collection {full_collection_name}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
 
 @app.post("/add_documents")
 async def add_documents(request: AddDocumentsRequest):

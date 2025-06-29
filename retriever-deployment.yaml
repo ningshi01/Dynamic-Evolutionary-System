@@ -33,7 +33,7 @@ spec:
         - name: LLM_SERVICE_URL
           value: "http://llm-service"
         - name: EMBEDDING_MODEL_NAME
-          value: "BAAI/bge-small-en-v1.5"
+          value: "Qwen/Qwen3-Embedding-0.6B"
         - name: RERANKER_MODEL_NAME
           value: "BAAI/bge-reranker-base"
         - name: LLM_MODEL_NAME
