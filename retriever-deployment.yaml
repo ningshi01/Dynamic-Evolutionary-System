@@ -21,6 +21,10 @@ spec:
         image: crater-harbor.act.buaa.edu.cn/user-liujh24/rag-retriever-service:latest
         ports:
         - containerPort: 8000
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
         env:
         - name: MILVUS_HOST
           value: "milvus-service"

@@ -18,6 +18,10 @@ spec:
         image: crater-harbor.act.buaa.edu.cn/user-liujh24/rag-api-gateway:latest # <-- IMPORTANT: Replace with your image
         ports:
         - containerPort: 8000
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
         env:
         - name: FILE_SERVICE_URL
           value: "http://fileservice-service"

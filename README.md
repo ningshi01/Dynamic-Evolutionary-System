@@ -628,6 +628,42 @@ For easier debugging, some internal services are temporarily exposed via `NodePo
     
     `-N` 参数用于接收流式响应。
 
+### 12. Deploy Horizontal Pod Autoscalers (Optional)
+
+To enable automatic scaling based on load, you can deploy Horizontal Pod Autoscalers (HPA) for the stateless services.
+
+**Prerequisite:** Ensure the `resources.requests` are defined in the `api-deployment.yaml`, `fileservice-deployment.yaml`, `parser-deployment.yaml`, and `retriever-deployment.yaml` files, as HPA relies on these values to calculate CPU utilization.
+
+1.  **Deploy the HPAs:**
+    The following command applies the HPA configurations for all four services. The YAML files are configured with a low CPU threshold (e.g., 10%) for easy testing.
+
+    ```bash
+    kubectl apply -f api-hpa.yaml -f fileservice-hpa.yaml -f parser-hpa.yaml -f retriever-hpa.yaml
+    ```
+
+2.  **Monitor the HPA Status:**
+    In a new terminal, run this command to watch the HPA status in real-time.
+
+    ```bash
+    kubectl get hpa -n rag -w
+    ```
+    You will see the current CPU utilization against the target (e.g., `8% / 10%`) and the number of replicas for each service.
+
+3.  **Generate Load for Testing:**
+    To trigger autoscaling, you need to send traffic to the API Gateway. Here is a PowerShell example that continuously calls the chat endpoint in a loop.
+
+    ```powershell
+    # Make sure to replace <api-gateway-url> with the correct URL
+    while ($true) {
+        curl -N -X POST http://<api-gateway-url>/chat/completions `
+            -H "Content-Type: application/json" `
+            -d '{"model": "my_knowledge_base", "messages": [{"role": "user", "content": "hello"}]}' `
+            -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 100
+    }
+    ```
+    As you run this script, you should see the CPU usage in the monitor window increase past the target, and Kubernetes will automatically start new pods, increasing the `REPLICAS` count.
+
 ### 12. 访问系统入口（API Gateway）
 
 The **API Gateway** is the primary entry point to the system, exposed via `NodePort`. The other services (`fileservice`, `parser-service`) are now considered internal components.

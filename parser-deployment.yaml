@@ -18,6 +18,10 @@ spec:
         image: crater-harbor.act.buaa.edu.cn/user-liujh24/minio-parser:latest # <-- IMPORTANT: Replace with your image
         ports:
         - containerPort: 8000
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
         env:
         - name: HF_ENDPOINT
           value: "https://hf-mirror.com"
