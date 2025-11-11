@@ -18,7 +18,8 @@ spec:
       containers:
       - name: retriever-container
         # IMPORTANT: Make sure to build and push this image to your registry
-        image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/rag-retriever-service:0916v2
+        # image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/rag-retriever-service:1020v6
+        image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/rag-retriever-service:1021v16
         ports:
         - containerPort: 8000
         resources:
@@ -42,6 +43,8 @@ spec:
           value: "BAAI/bge-reranker-base"
         - name: LLM_MODEL_NAME
           value: "Qwen/Qwen3-0.6B"
+        - name: LLM_MODEL_BIG_NAME
+          value: "Qwen/Qwen3-1.7B"
 ---
 apiVersion: v1
 kind: Service

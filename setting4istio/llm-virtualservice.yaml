@@ -1,0 +1,16 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: llm-virtualservice
+  namespace: act-test
+spec:
+  hosts:
+  - llm-service.act-test.svc.cluster.local
+  http:
+  # 规则: 默认路由 -> v1 模型80%, v2 模型20%
+  - name: "default-route"
+    route:
+    - destination:
+        host: llm-service.act-test.svc.cluster.local
+        subset: v1
+      weight: 100

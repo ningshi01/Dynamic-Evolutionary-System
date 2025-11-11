@@ -1,0 +1,14 @@
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: llm-destination
+  namespace: act-test
+spec:
+  host: llm-service.act-test.svc.cluster.local  # 目标服务
+  subsets:
+  - name: v1  # 子集名称，对应0.6B模型
+    labels:
+      version: v1  # 匹配Pod的version=v1标签
+  - name: v2  # 子集名称，对应1.7B模型
+    labels:
+      version: v2  # 匹配Pod的version=v2标签

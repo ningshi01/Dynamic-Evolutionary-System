@@ -15,11 +15,13 @@ headers = {
 }
 
 # 设置URL
-url = "http://192.168.5.113:32174/rag_generate"
+baseUrl = "http://192.168.5.65:31890"
+url4rag = f"{baseUrl}/rag_generate"
+url4chat = f"{baseUrl}/v1/chat/completions"
 
 try:
     # 发送POST请求
-    response = requests.post(url, headers=headers, json=payload)
+    response = requests.post(url4rag, headers=headers, json=payload)
 
     # 检查响应状态码
     response.raise_for_status() 
