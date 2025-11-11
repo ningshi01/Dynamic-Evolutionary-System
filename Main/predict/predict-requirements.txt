@@ -1,6 +1,0 @@
-pandas
-prophet
-Requests
-schedule
-httpx
-kubernetes

@@ -1,7 +1,0 @@
-{
-    "messages": [
-      {"role": "user", "content": "你好，请为我随机生成一个问题，有且仅有一个问题，且直接输出问题即可。"}
-    ],
-    "reasoning": "False",
-    "think": "False"
-}

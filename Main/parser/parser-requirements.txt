@@ -1,6 +1,0 @@
-fastapi
-uvicorn
-minio
-transformers
-torch
-tiktoken 
