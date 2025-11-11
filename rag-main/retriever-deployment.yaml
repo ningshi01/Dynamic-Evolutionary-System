@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: retriever-deployment
+  namespace: act-test
+  labels:
+    app: retriever-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: retriever-service
+  template:
+    metadata:
+      labels:
+        app: retriever-service
+    spec:
+      containers:
+      - name: retriever-container
+        # IMPORTANT: Make sure to build and push this image to your registry
+        # image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/rag-retriever-service:1020v6
+        image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/rag-retriever-service:1021v16
+        ports:
+        - containerPort: 8000
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+        env:
+        - name: MILVUS_HOST
+          value: "milvus-service"
+        - name: MILVUS_PORT
+          value: "19530"
+        - name: EMBEDDING_SERVICE_URL
+          value: "http://embedding-service"
+        - name: RERANKER_SERVICE_URL
+          value: "http://reranker-service"
+        - name: LLM_SERVICE_URL
+          value: "http://llm-service"
+        - name: EMBEDDING_MODEL_NAME
+          value: "Qwen/Qwen3-Embedding-0.6B"
+        - name: RERANKER_MODEL_NAME
+          value: "BAAI/bge-reranker-base"
+        - name: LLM_MODEL_NAME
+          value: "Qwen/Qwen3-0.6B"
+        - name: LLM_MODEL_BIG_NAME
+          value: "Qwen/Qwen3-1.7B"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: retriever-service
+  namespace: act-test
+spec:
+  selector:
+    app: retriever-service
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: NodePort 

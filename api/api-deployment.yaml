@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-deployment
+  namespace: act-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+    spec:
+      containers:
+      - name: api-gateway-container
+        image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/rag-api-gateway:latest # <-- IMPORTANT: Replace with your image
+        ports:
+        - containerPort: 8000
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+        env:
+        - name: FILE_SERVICE_URL
+          value: "http://fileservice-service"
+        - name: PARSER_SERVICE_URL
+          value: "http://parser-service"
+        - name: RETRIEVER_SERVICE_URL
+          value: "http://retriever-service"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+  namespace: act-test
+spec:
+  selector:
+    app: api-gateway
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: NodePort 

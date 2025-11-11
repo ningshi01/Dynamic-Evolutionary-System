@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: predict-deployment
+  namespace: act-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: predict
+  template:
+    metadata:
+      labels:
+        app: predict
+    spec:
+      serviceAccountName: ac4pod #use the service account
+      containers:
+      - name: predict
+        # image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/predict-service:1031v3
+        image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/predict-service:1031v4
+        ports:
+        - containerPort: 8000
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+        env:
+        - name: HF_ENDPOINT
+          value: "https://hf-mirror.com"
+        
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: predict-service
+  namespace: act-test
+spec:
+  selector:
+    app: predict
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: NodePort 

@@ -1,0 +1,107 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: llm-model-cache-pvc-big
+  namespace: act-test
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-deployment-big
+  namespace: act-test
+  labels:
+    app: llm-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llm-service
+  template:
+    metadata:
+      labels:
+        app: llm-service
+        version: v2  
+    spec:
+      nodeName: dell-65  # 强制指定节点为dell-65
+      volumes:
+      - name: cache-volume
+        persistentVolumeClaim:
+          claimName: llm-model-cache-pvc-big
+      - name: dshm
+        emptyDir:
+          medium: Memory
+      containers:
+      - name: llm-container
+        image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/vllm:v0.8.5
+        args: [
+          "--dtype", "float16",
+          "--model", "Qwen/Qwen3-1.7B",
+          "--max_model_len", "4096",   
+          "--trust-remote-code",
+          "--port", "8000"
+        ]
+        env:
+        - name: HF_ENDPOINT
+          value: "https://hf-mirror.com"  
+        # - name: VLLM_LOGGING_LEVEL
+        #   value: "DEBUG"  # 设置日志级别为DEBUG
+        - name: VLLM_CPU_KVCACHE_SPACE
+          value: "1"
+        - name: CUDA_LAUNCH_BLOCKING
+          value: "1"
+        - name: VLLM_WORKER_MULTIPROC_METHOD
+          value: "spawn"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        # 设置读取hf_token
+        - name: HUGGING_FACE_HUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: token
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: token
+        ports:
+        - containerPort: 8000
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+          requests:
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - mountPath: /root/.cache/huggingface
+          name: cache-volume
+        - mountPath: /dev/shm
+          name: dshm
+        # readinessProbe:
+        #   httpGet:
+        #     path: /health
+        #     port: 8000
+        #   initialDelaySeconds: 60
+        #   periodSeconds: 15
+        #   timeoutSeconds: 5
+        #   failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-service
+  namespace: act-test
+spec:
+  selector:
+    app: llm-service
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80
+    targetPort: 8000
+  type: NodePort 

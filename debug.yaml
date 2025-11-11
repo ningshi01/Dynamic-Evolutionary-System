@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nvml-check
+  namespace: act-test
+spec:
+  nodeName: dell-65
+  containers:
+  - name: check
+    image: gpu-harbor.act.buaa.edu.cn/user-liyilong/envd-vllm:0.8.3-cu12.4-rdma-v1
+    command: ["/bin/bash", "-c"]
+    args:
+      - |
+        echo "=== 检查基础环境 ==="
+        ls -la /dev/ | grep nvidia
+        echo "=== 检查设备文件 ==="
+        find /dev -name "nvidia*" 2>/dev/null
+        echo "=== 尝试运行 nvidia-smi ==="
+        nvidia-smi || echo "nvidia-smi 不可用"
+        echo "=== 检查 CUDA ==="
+        ls -la /usr/local/cuda 2>/dev/null || echo "CUDA 未找到"
+        sleep 3600
+    env:
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: "all"
+    resources:
+      limits:
+        nvidia.com/gpu: "1"
