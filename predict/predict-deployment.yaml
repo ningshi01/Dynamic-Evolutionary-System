@@ -16,8 +16,9 @@ spec:
       serviceAccountName: ac4pod #use the service account
       containers:
       - name: predict
-        # image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/predict-service:1031v3
-        image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/predict-service:1031v4
+        # image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/predict-service:0227v4
+        image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/predict-service:0227v5
+        imagePullPolicy: Always
         ports:
         - containerPort: 8000
         resources:

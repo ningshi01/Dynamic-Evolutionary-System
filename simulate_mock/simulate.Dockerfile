@@ -7,6 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Install dependencies
+COPY fortest.json /app/fortest.json
 COPY simulate_requirements.txt requirements.txt
 RUN pip install --no-cache-dir --timeout=600  -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 

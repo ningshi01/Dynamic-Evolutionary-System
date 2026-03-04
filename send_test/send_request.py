@@ -15,7 +15,7 @@ headers = {
 }
 
 # 设置URL
-baseUrl = "http://192.168.5.65:31890"
+baseUrl = "http://192.168.5.111:32719"
 url4rag = f"{baseUrl}/rag_generate"
 url4chat = f"{baseUrl}/v1/chat/completions"
 

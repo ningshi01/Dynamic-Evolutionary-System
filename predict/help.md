@@ -10,7 +10,7 @@ sum(rate(istio_requests_total{destination_service_namespace="act-test"}[1h])) by
 # 2. 请求延迟 (按目标服务聚合，P95延迟)
 histogram_quantile(0.95, sum(rate(istio_request_duration_milliseconds_bucket[1h])) by (le, destination_service))
 
-# 3. 错误率 (HTTP 5xx 错误率)
+# 3. 错误率 (HTTP 5xx Error Rate)
 sum(rate(istio_requests_total{response_code=~"5.."}[1h])) by (destination_service)
 / sum(rate(istio_requests_total[1h])) by (destination_service)
 

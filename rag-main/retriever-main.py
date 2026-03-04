@@ -9,6 +9,7 @@ from typing import List, Dict, Any, AsyncGenerator, Optional
 import asyncio
 import json
 import re
+from datetime import datetime, timedelta,timezone
 
 # Langchain imports
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
@@ -22,8 +23,8 @@ from langchain_core.runnables import RunnablePassthrough,RunnableLambda
 from pymilvus import connections, utility, Collection, CollectionSchema, FieldSchema, DataType
 
 # --- Configuration ---
-MILVUS_HOST = os.getenv("MILVUS_HOST", "localhost")
-MILVUS_PORT = os.getenv("MILVUS_PORT", "19530")
+MILVUS_HOST = os.getenv("MILVUS_HOST")
+MILVUS_PORT = os.getenv("MILVUS_PORT")
 EMBEDDING_SERVICE_URL = os.getenv("EMBEDDING_SERVICE_URL")
 RERANKER_SERVICE_URL = os.getenv("RERANKER_SERVICE_URL")
 LLM_SERVICE_URL = os.getenv("LLM_SERVICE_URL")
@@ -53,9 +54,32 @@ PRIMARY_LLM_MODEL = os.getenv("LLM_MODEL_NAME")
 
 app = FastAPI(title="RAG Retriever Service")
 
-# Setup logging
+# 全局日志使用 Asia/Shanghai 时区
+_CST = timezone(timedelta(hours=8))
+
+
+class _CSTFormatter(logging.Formatter):
+    """Formatter that always uses CST (UTC+8) timestamps."""
+    converter = None  # disable default converter
+
+    def formatTime(self, record, datefmt=None):
+        dt = datetime.fromtimestamp(record.created, tz=_CST)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime('%Y-%m-%d %H:%M:%S') + f',{int(record.msecs):03d}'
+
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# 演化策略专用日志 - 使用特殊前缀便于在 K8s 中过滤
+evo_logger = logging.getLogger("evolution_strategy")
+evo_logger.setLevel(logging.INFO)
+if not evo_logger.handlers:
+    _evo_handler = logging.StreamHandler()
+    _evo_handler.setFormatter(_CSTFormatter('%(asctime)s [EVOLUTION] %(message)s'))
+    evo_logger.addHandler(_evo_handler)
+    evo_logger.propagate = False
 
 # Cache for Milvus vector_store instances to avoid re-creating per request
 vector_store_cache: Dict[str, Milvus] = {}
@@ -224,12 +248,13 @@ class RAGRequest(BaseModel):
 # --- Semantic Cache Functions ---
 def init_semantic_cache():
     """初始化语义缓存集合"""
+    evo_logger.info("Evolution Strategy - 3 - 开始初始化语义缓存集合")
     # Robust init: handle transient Milvus unavailability and different pymilvus versions
     retry_attempts = 3
     for attempt in range(1, retry_attempts + 1):
         try:
             if not utility.has_collection(CACHE_COLLECTION_NAME):
-                logger.info("Creating semantic cache collection...")
+
                 fields = [
                     FieldSchema(name="pk", dtype=DataType.INT64, is_primary=True, auto_id=True),
                     FieldSchema(name="query", dtype=DataType.VARCHAR, max_length=4096),
@@ -256,15 +281,13 @@ def init_semantic_cache():
 
                     cache_col.flush()
                     cache_col.load()
-                    logger.info("Semantic cache collection created and index built successfully.")
+                    evo_logger.info("Evolution Strategy - 3 - 语义缓存集合创建成功并建立索引")
                 except Exception:
                     logger.exception("Failed to create index for semantic cache collection; collection created without index.")
             else:
-                logger.info("Semantic cache collection already exists.")
                 try:
                     existing_col = Collection(CACHE_COLLECTION_NAME)
                     existing_col.load()
-                    logger.info("Semantic cache collection loaded into memory.")
                 except Exception:
                     logger.exception("Failed to load existing semantic cache collection at init.")
 
@@ -285,7 +308,6 @@ async def search_semantic_cache(query: str) -> Optional[dict]:
     try:
         # Ensure cache exists (will try to init if missing)
         if not utility.has_collection(CACHE_COLLECTION_NAME):
-            logger.info("Semantic cache missing; attempting to initialize before search.")
             init_semantic_cache()
 
         cache_collection = Collection(CACHE_COLLECTION_NAME)
@@ -322,7 +344,7 @@ async def search_semantic_cache(query: str) -> Optional[dict]:
                 cache_collection.insert([updated_entry])
                 cache_collection.flush()
                 
-                logger.info(f"Cache hit with similarity score: {hit.score:.4f}")
+                evo_logger.info(f"Evolution Strategy - 3 - 语义缓存命中, 相似度={hit.score:.4f}, 跳过RAG流程")
                 return {
                     "query": hit.entity.get("query"),
                     "response": hit.entity.get("response"),
@@ -338,7 +360,6 @@ async def add_to_semantic_cache(query: str, response: str):
     try:
         # Ensure cache exists before inserting
         if not utility.has_collection(CACHE_COLLECTION_NAME):
-            logger.info("Semantic cache missing; attempting to initialize before insert.")
             init_semantic_cache()
 
         cache_collection = Collection(CACHE_COLLECTION_NAME)
@@ -359,7 +380,7 @@ async def add_to_semantic_cache(query: str, response: str):
         cache_collection.insert([cache_entry])
         cache_collection.flush()
         
-        logger.info(f"Added new entry to semantic cache: {query[:50]}...")
+        evo_logger.info(f"Evolution Strategy - 3 - 新查询-响应对已加入语义缓存: {query[:50]}...")
     except Exception as e:
         logger.exception(f"Error adding to semantic cache: {e}")
 
@@ -369,7 +390,7 @@ async def clear_semantic_cache():
     try:
         if utility.has_collection(CACHE_COLLECTION_NAME):
             utility.drop_collection(CACHE_COLLECTION_NAME)
-            logger.info("Semantic cache cleared successfully.")
+            evo_logger.info("Evolution Strategy - 3 - 语义缓存已清空")
             return {"message": "Semantic cache cleared successfully."}
         else:
             raise HTTPException(status_code=404, detail="Semantic cache collection not found.")
@@ -398,22 +419,40 @@ async def get_cache_stats():
         logger.error(f"Failed to get cache stats: {e}")
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
 
+# --- Milvus Connection Helper ---
+def ensure_milvus_connected():
+    """确保 Milvus 连接可用；如果连接丢失或不存在则自动重连。"""
+    try:
+        # 尝试一个轻量操作来验证连接是否存活
+        conn = connections._fetch_handler("default")
+        if conn is None:
+            raise Exception("No active connection")
+    except Exception:
+        logger.info("Milvus connection not active, attempting to (re)connect...")
+        try:
+            connections.disconnect("default")
+        except Exception:
+            pass
+        connections.connect("default", host=MILVUS_HOST, port=MILVUS_PORT)
+        logger.info("Milvus reconnected successfully.")
+
 # --- Startup and Shutdown Events ---
 @app.on_event("startup")
 def startup_event():
     # Attempt to connect to Milvus; allow retries to handle startup ordering in containers
-    max_retries = 3
+    max_retries = 10
     for attempt in range(1, max_retries + 1):
         try:
             connections.connect("default", host=MILVUS_HOST, port=MILVUS_PORT)
-            logger.info(f"Connected to Milvus at {MILVUS_HOST}:{MILVUS_PORT}")
+            logger.info(f"Successfully connected to Milvus at {MILVUS_HOST}:{MILVUS_PORT}")
             break
         except Exception as conn_e:
-            logger.warning(f"Attempt {attempt} failed to connect to Milvus: {conn_e}")
+            wait_time = min(2 ** attempt, 30)  # 指数退避，最长 30 秒
+            logger.warning(f"Attempt {attempt}/{max_retries} failed to connect to Milvus: {conn_e}. Retrying in {wait_time}s...")
             if attempt == max_retries:
                 logger.exception("Could not establish connection to Milvus after retries; continuing without cache initialization.")
             else:
-                time.sleep(1.0)
+                time.sleep(wait_time)
 
     # Try to initialize semantic cache but do not crash the whole app if Milvus is unavailable
     try:
@@ -445,7 +484,7 @@ llm = ChatOpenAI(
     openai_api_key="dummy-key",
     streaming=True,
     temperature=0.1,
-    default_headers={"X-Use-Cache": "true"},
+    default_headers={"X-Use-Cache": "true", "x-llm-version": "v1"},
 )
 
 llm_big = ChatOpenAI(
@@ -454,6 +493,7 @@ llm_big = ChatOpenAI(
     openai_api_key="dummy-key",
     streaming=True,
     temperature=0.1,
+    default_headers={"x-llm-version": "v2"},
 )
 
 # 添加查询分析类
@@ -514,6 +554,22 @@ class QueryComplexityAnalyzer:
 query_analyzer = QueryComplexityAnalyzer()
 
 
+def select_llm_for_query(query: str) -> ChatOpenAI:
+    """根据查询复杂度选择合适的 LLM（小模型 v1 / 大模型 v2）。
+
+    高复杂度查询路由至 llm_big (Qwen3-1.7B, version=v2)，
+    其余查询路由至 llm (Qwen3-0.6B, version=v1)。
+    请求头中的 x-llm-version 将被 Istio VirtualService 用于子集路由。
+    """
+    analysis = query_analyzer.analyze_query(query)
+    complexity = analysis.get("x-query-complexity", "low")
+    if complexity == "high":
+        evo_logger.info(f"LLM Router - 查询复杂度={complexity}, 路由至大模型 llm-big (v2)")
+        return llm_big
+    else:
+        evo_logger.info(f"LLM Router - 查询复杂度={complexity}, 路由至小模型 llm (v1)")
+        return llm
+
 
 # --- start for evolution strategy ---
 # --- Query Classification Function ---
@@ -551,11 +607,9 @@ Q: \"基于已有的知识回答我：k8s相关知识\" -> RETRIEVE
         elif "ANSWER_DIRECTLY" in result:
             return "ANSWER_DIRECTLY"
         else:
-            # 如果LLM没有按预期输出，默认使用检索路径
-            logger.info(f"LLM返回了意外的分类结果: '{result}'，默认使用RETRIEVE")
             return "RETRIEVE"
     except Exception as e:
-        logger.info(f"查询分类失败: {e}，默认使用RETRIEVE")
+        logger.warning(f"查询分类失败: {e}，默认使用RETRIEVE")
         return "RETRIEVE"
 # --- end for evolution strategy ---
 
@@ -587,6 +641,7 @@ async def rerank(query: str, documents: List[Document], top_n: int) -> List[Docu
 # --- API Endpoints ---
 @app.post("/create_collection", status_code=201)
 def create_collection(request: CreateCollectionRequest):
+    ensure_milvus_connected()
     full_collection_name = f"{COLLECTION_NAME_PREFIX}{request.collection_name}"
     if utility.has_collection(full_collection_name):
         raise HTTPException(status_code=409, detail=f"Collection '{full_collection_name}' already exists.")
@@ -606,13 +661,13 @@ def delete_collection(collection_name: str):
     """
     Deletes a collection from Milvus.
     """
+    ensure_milvus_connected()
     full_collection_name = f"{COLLECTION_NAME_PREFIX}{collection_name}"
     if not utility.has_collection(full_collection_name):
         raise HTTPException(status_code=404, detail=f"Collection '{full_collection_name}' not found.")
     
     try:
         utility.drop_collection(full_collection_name)
-        logger.info(f"Collection '{full_collection_name}' deleted successfully.")
         return {"message": f"Collection '{full_collection_name}' deleted successfully."}
     except Exception as e:
         logger.error(f"Failed to delete collection {full_collection_name}", exc_info=True)
@@ -620,6 +675,7 @@ def delete_collection(collection_name: str):
 
 @app.post("/add_documents")
 async def add_documents(request: AddDocumentsRequest):
+    ensure_milvus_connected()
     full_collection_name = f"{COLLECTION_NAME_PREFIX}{request.collection_name}"
     if not utility.has_collection(full_collection_name):
         raise HTTPException(status_code=404, detail=f"Collection '{full_collection_name}' not found.")
@@ -641,26 +697,30 @@ async def add_documents(request: AddDocumentsRequest):
 
 @app.post("/rag_generate")
 async def rag_generate(request: RAGRequest) -> StreamingResponse:
+    ensure_milvus_connected()
     full_collection_name = f"{COLLECTION_NAME_PREFIX}{request.collection_name}"
     if not utility.has_collection(full_collection_name):
         raise HTTPException(status_code=404, detail=f"Collection '{full_collection_name}' not found.")
 
     # 语义缓存检查（默认开启）
-    cache_hit = None
     cache_hit = await search_semantic_cache(request.query)
     if cache_hit:
-        logger.info(f"语义缓存命中，跳过RAG流程: {request.query[:50]}...")
+        evo_logger.info(f"Evolution Strategy - 3 - 缓存命中, 直接返回缓存结果: {request.query[:50]}...")
+        evo_logger.info(f"Evolution Strategy - 2 - 缓存命中跳过RAG流水线, query: {request.query[:50]}...")
         async def stream_cached_response() -> AsyncGenerator[str, None]:
             yield cache_hit["response"]
         return StreamingResponse(stream_cached_response(), media_type="text/plain")
 
     query_class = await classify_query(request.query)
-    logger.info(f"查询分类结果: '{request.query}' -> {query_class}")
+    evo_logger.info(f"Evolution Strategy - 2 - 查询分类结果: {query_class}, query: {request.query[:50]}")
+
+    # 根据查询复杂度选择 LLM（v1 小模型 / v2 大模型），Istio 将按 x-llm-version 头路由
+    selected_llm = select_llm_for_query(request.query)
 
     # if need retrieve
     # maybe istio can show the path's modify
     if query_class == "ANSWER_DIRECTLY":
-        logger.info(f"问题无需检索，直接由LLM回答: {request.query}")
+        evo_logger.info(f"Evolution Strategy - 2 - 自适应判断: 无需检索, 直接LLM回答")
         
         no_context_prompt_template = """Please answer the following question based on your knowledge.
 Question:
@@ -672,7 +732,7 @@ Question:
             no_context_chain = (
                 {"question": RunnablePassthrough()}
                 | no_context_prompt
-                | llm
+                | selected_llm
                 | StrOutputParser()
             )
             # 收集完整响应用于缓存
@@ -686,7 +746,7 @@ Question:
         
         return StreamingResponse(generate_direct_response(), media_type="text/plain")
 
-    logger.info(f"问题需要进行检索，响应路径修改-rag")
+    evo_logger.info(f"Evolution Strategy - 2 - 自适应判断: 需要检索, 进入RAG流水线")
     # Use explicit similarity search via Milvus Collection.search to obtain normalized scores
     # This avoids ambiguity from vector_store implementations and provides stable 0..1 scores
     raw_docs_with_scores = await similarity_search_collection(full_collection_name, request.query, top_k=request.top_k, metric="COSINE")
@@ -699,20 +759,19 @@ Question:
     LOW_SIMILARITY_THRESHOLD = 0.3
     
     async def determine_response_strategy():
-        logger.info(f"相似度最高: {max(scores)}")
         # higher
         if scores and scores[0] >= HIGH_SIMILARITY_THRESHOLD:
-            logger.info(f"使用top1直接响应，相似度: {scores[0]}")
+            evo_logger.info(f"Evolution Strategy - 2 - 相似度{scores[0]:.4f}>={HIGH_SIMILARITY_THRESHOLD}, 使用top1直接响应")
             return docs[0:1]
         
         # lower
         elif scores and max(scores) < LOW_SIMILARITY_THRESHOLD:
-            logger.info(f"所有文档相似度低，最高分: {max(scores)}，直接由LLM响应")
+            evo_logger.info(f"Evolution Strategy - 2 - 最高相似度{max(scores):.4f}<{LOW_SIMILARITY_THRESHOLD}, 所有文档相似度低, 直接LLM响应")
             return []
         
         # normal
         else:
-            logger.info(f"正常处理")
+            evo_logger.info(f"Evolution Strategy - 2 - 相似度在阈值区间[{LOW_SIMILARITY_THRESHOLD},{HIGH_SIMILARITY_THRESHOLD}), 正常流程: 检索+重排序")
             reranked_docs = await rerank(request.query, docs, request.rerank_top_n)
             return reranked_docs
 
@@ -737,12 +796,11 @@ Question:
 
         # 收集完整响应用于缓存
         full_response = ""
-        logger.info("test2--------------------------------------")
         if not selected_docs:
             no_context_chain = (
                 {"question": RunnablePassthrough()}
                 | no_context_prompt
-                | llm
+                | selected_llm
                 | StrOutputParser()
             )
             async for chunk in no_context_chain.astream(request.query):
@@ -753,24 +811,19 @@ Question:
                 await add_to_semantic_cache(request.query, full_response)
 
         else:
-            logger.info("test3--------------------------------------")
             context = "\n\n---\n\n".join(doc.page_content for doc in selected_docs)
             rag_chain = (
                 {"context": RunnableLambda(lambda x: context), "question": RunnablePassthrough()}
                 | prompt
-                | llm
+                | selected_llm
                 | StrOutputParser()
             )
-            
-            logger.info("test4--------------------------------------")
             async for chunk in rag_chain.astream(request.query):
-                # 累加响应以便后续缓存
                 full_response += chunk
                 yield chunk
 
-            logger.info("test5--------------------------------------")
-            # 缓存RAG结果（仅当之前没有命中缓存且有完整响应）
-            if full_response and not cache_hit:
+            # 缓存RAG结果
+            if full_response:
                 await add_to_semantic_cache(request.query, full_response)
 
     return StreamingResponse(generate_response(), media_type="text/plain")

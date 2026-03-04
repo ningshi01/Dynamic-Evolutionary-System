@@ -38,12 +38,7 @@ spec:
           medium: Memory
       containers:
       - name: llm-container
-        # image: gpu-harbor.act.buaa.edu.cn/user-liyilong/envd-vllm:0.8.5-cu12.6-rdma
-        # image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/vllm:v0.9.0.1
-        # image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/vllm:v0.8.0
         image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/vllm:v0.8.5
-        # image: ghcr.nju.edu.cn/sasha0552/vllm:latest
-        # image: gpu-harbor.act.buaa.edu.cn/user-liyilong/envd-vllm:0.8.3-cu12.4-rdma-v1
         args: [
           "--dtype", "float16",
           "--model", "Qwen/Qwen3-0.6B",

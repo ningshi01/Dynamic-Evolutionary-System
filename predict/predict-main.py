@@ -3,7 +3,7 @@ import json
 import csv
 import logging
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta,timezone
 import pandas as pd
 from prophet import Prophet
 import os
@@ -14,8 +14,32 @@ from kubernetes.client.rest import ApiException
 from kubernetes.config.config_exception import ConfigException
 from kubernetes.utils.quantity import parse_quantity
 
+# 全局日志使用 Asia/Shanghai 时区
+_CST = timezone(timedelta(hours=8))
+
+
+class _CSTFormatter(logging.Formatter):
+    """Formatter that always uses CST (UTC+8) timestamps."""
+    converter = None  # disable default converter
+
+    def formatTime(self, record, datefmt=None):
+        dt = datetime.fromtimestamp(record.created, tz=_CST)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime('%Y-%m-%d %H:%M:%S') + f',{int(record.msecs):03d}'
+
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# 演化策略专用日志 - 使用特殊前缀便于在 K8s 中过滤
+evo_logger = logging.getLogger("evolution_strategy")
+evo_logger.setLevel(logging.INFO)
+if not evo_logger.handlers:
+    _evo_handler = logging.StreamHandler()
+    _evo_handler.setFormatter(_CSTFormatter('%(asctime)s [EVOLUTION] %(message)s'))
+    evo_logger.addHandler(_evo_handler)
+    evo_logger.propagate = False
 
 TARGET_DEPLOYMENTS = {
     'api-deployment': 'api-hpa',
@@ -182,10 +206,12 @@ def allocate_pods_based_on_forecast(deployment_scores, namespace, type):
             logger.info(
                 f"Deployment {deployment_name} 预测所需副本 {recommended} 低于 HPA 下限 {min_replicas}，需要缩容"
             )
+            evo_logger.info(f"Evolution Strategy - 1 - {deployment_name} 预测副本{recommended}低于HPA下限{min_replicas}, 触发缩容")
         elif recommended > max_replicas:
             logger.info(
                 f"Deployment {deployment_name} 预测所需副本 {recommended} 超出 HPA 上限 {max_replicas}，按上限处理"
             )
+            evo_logger.info(f"Evolution Strategy - 1 - {deployment_name} 预测副本{recommended}超出HPA上限{max_replicas}, 按上限处理")
             recommended = max_replicas
 
         if recommended != min_replicas:
@@ -196,6 +222,7 @@ def allocate_pods_based_on_forecast(deployment_scores, namespace, type):
                     body={'spec': {'minReplicas': recommended}},
                 )
                 logger.info(f"已将 {hpa_name} 的 minReplicas 更新为 {recommended}")
+                evo_logger.info(f"Evolution Strategy - 1 - 已更新 {hpa_name} minReplicas={recommended}")
             except ApiException as exc:
                 logger.error(f"更新 {hpa_name} minReplicas 失败: {exc}")
 
@@ -208,6 +235,7 @@ def allocate_pods_based_on_forecast(deployment_scores, namespace, type):
                     body={'spec': {'replicas': recommended}},
                 )
                 logger.info(f"已将 Deployment {deployment_name} 副本数调整为 {recommended}")
+                evo_logger.info(f"Evolution Strategy - 1 - 已调整 {deployment_name} 副本数: {current_replicas}->{recommended}")
             except ApiException as exc:
                 logger.warning(f"更新 Deployment {deployment_name} 副本数失败: {exc}")
 
@@ -317,6 +345,7 @@ def allocate_pods_based_on_forecast(deployment_scores, namespace, type):
 #         )
 
 def export_prometheus_CPU_data():
+    evo_logger.info("Evolution Strategy - 1 - 开始采集 Prometheus CPU 时序数据")
     prom_url = "http://prometheus.istio-system.svc.cluster.local:9090"
     namespace = "act-test"
     time_range = "1h"
@@ -402,8 +431,10 @@ def export_prometheus_CPU_data():
                 # logger.info(f"Deployment {deployment_name} 的CPU数据处理完成")
 
             logger.info(f"共处理 {len([d for d in deployments_cpu_data.keys() if d != 'unknown'])} 个deployment的时间序列数据")
+            evo_logger.info(f"Evolution Strategy - 1 - CPU数据采集完成, 共{len([d for d in deployments_cpu_data.keys() if d != 'unknown'])}个deployment")
 
             # 为每个deployment生成预测
+            evo_logger.info("Evolution Strategy - 1 - 开始基于Prophet模型进行CPU时序预测")
             generate_prophet_forecasts(deployments_cpu_data, namespace, 1)
         else:
             logger.info("查询成功，但未找到CPU使用率数据")
@@ -411,6 +442,7 @@ def export_prometheus_CPU_data():
         logger.error(f"CPU查询失败: {response.status_code}")
 
 def export_prometheus_GPU_data():
+    evo_logger.info("Evolution Strategy - 1 - 开始采集 Prometheus GPU 时序数据")
     prom_url = "http://prometheus.istio-system.svc.cluster.local:9090"
     namespace = "act-test"
     time_range = "1h"
@@ -480,8 +512,10 @@ def export_prometheus_GPU_data():
                 logger.info(f"Deployment {deployment_name} 的GPU数据处理完成")
 
             logger.info(f"共处理 {len([d for d in deployments_gpu_data.keys() if d != 'unknown'])} 个deployment的时间序列数据")
+            evo_logger.info(f"Evolution Strategy - 1 - GPU数据采集完成, 共{len([d for d in deployments_gpu_data.keys() if d != 'unknown'])}个deployment")
 
             # 为每个deployment生成预测
+            evo_logger.info("Evolution Strategy - 1 - 开始基于Prophet模型进行GPU时序预测")
             generate_prophet_forecasts(deployments_gpu_data, namespace, 2)
         else:
             logger.info("查询成功，但未找到GPU使用率数据")
@@ -585,115 +619,27 @@ def generate_prophet_forecasts(deployments_data, namespace, type):
             predicted_values_non_negative = predicted_values.clip(lower=0)  # 将所有小于0的值设为0
             mean_prediction = predicted_values_non_negative.mean()
             deployment_scores[deployment_name] = mean_prediction
-
-            # logger.info(f"Deployment {deployment_name} 的{metric_name}预测完成")
-            # logger.info(f"预测数据量: {len(forecast_result)} 条记录")
+            logger.info(f"Deployment {deployment_name} 的{metric_name}预测完成, 均值={mean_prediction:.6f}")
 
         except Exception as e:
             logger.error(f"为Deployment {deployment_name} 生成{metric_name}预测时出错: {str(e)}")
 
-    # 打印每个deployment的预测得分均值
-    logger.info(f"\n=== 各Deployment预测得分均值 ({metric_display}) ===")
-    for deployment_name, mean_score in deployment_scores.items():
-        logger.info(f"Deployment {deployment_name}: 平均预测{metric_display} = {mean_score * 100:.2f}%")
-
+    # 统一输出一条汇总日志
     if deployment_scores:
+        lines = [f'{name}={score:.6f}' for name, score in deployment_scores.items()]
+        summary = ' | '.join(lines)
+        evo_logger.info(
+            f"Evolution Strategy - 1 - {metric_name}预测完成({len(deployment_scores)}个deployment): | {summary}"
+        )
+        evo_logger.info(f"Evolution Strategy - 1 - 开始基于{metric_name}预测结果进行副本数调整")
         allocate_pods_based_on_forecast(deployment_scores, namespace, type)
     else:
-        logger.info(f"未生成任何{metric_display}预测结果，跳过自动副本调整")
-
-# def generate_prophet_forecasts(deployments_data, namespace,type):
-#     """
-#     为每个deployment的数据使用Prophet进行预测，并计算预测得分的均值
-#     """
-#     deployment_scores = {}
-
-#     for deployment_name, deployment_info in deployments_data.items():
-#         # 跳过unknown deployment
-#         if deployment_name == 'unknown':
-#             continue
-
-#         try:
-#             # 直接从内存中的数据创建DataFrame，而不是从CSV文件读取
-#             data_points = deployment_info['data']
-
-#             # 准备DataFrame
-#             df_data = {
-#                 'timestamp': [point['timestamp'] for point in data_points],
-#                 'datetime': [point['datetime'] for point in data_points],
-#                 'cpu_cores': [point['value'] for point in data_points]
-#             }
-#             df = pd.DataFrame(df_data)
-
-#             # 准备Prophet需要的数据格式
-#             prophet_df = pd.DataFrame({
-#                 'ds': pd.to_datetime(df['datetime']),
-#                 'y': df['cpu_cores']
-#             })
-
-#             # 创建并训练Prophet模型
-#             model = Prophet(
-#                 daily_seasonality=True,
-#                 yearly_seasonality=False,
-#                 weekly_seasonality=False,
-#                 changepoint_prior_scale=0.05
-#             )
-
-#             # 添加小时级别的季节性
-#             model.add_seasonality(name='hourly', period=1 / 24, fourier_order=5)
-
-#             # 训练模型
-#             model.fit(prophet_df)
-
-#             # 创建未来1小时的预测数据框（保持1分钟间隔）
-#             future = model.make_future_dataframe(periods=60, freq='1min')
-
-#             # 进行预测
-#             forecast = model.predict(future)
-
-#             # 只保留未来的预测部分（最后60个数据点）
-#             future_forecast = forecast.tail(60).copy()
-
-#             # 添加deployment列
-#             future_forecast['deployment'] = deployment_name
-
-#             # 选择需要的列并重命名
-#             forecast_result = future_forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper', 'deployment']]
-#             forecast_result.columns = ['datetime', 'predicted_cpu_cores', 'predicted_lower', 'predicted_upper',
-#                                        'deployment']
-
-#             # 格式化datetime
-#             forecast_result['datetime'] = forecast_result['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
-
-#             # 计算预测得分的均值（使用yhat列）
-#             predicted_cores = forecast_result['predicted_cpu_cores']
-#             predicted_cores_non_negative = predicted_cores.clip(lower=0)  # 将所有小于0的值设为0
-#             mean_prediction = predicted_cores_non_negative.mean()
-#             deployment_scores[deployment_name] = mean_prediction
-
-#             # 保存预测结果到CSV - 已注释掉
-#             # forecast_filename = f'forecast_{namespace}_1h_CPU_deployment_{deployment_name}.csv'
-#             # forecast_result.to_csv(forecast_filename, index=False)
-
-#             logger.info(f"Deployment {deployment_name} 的CPU预测完成")
-#             logger.info(f"预测数据量: {len(forecast_result)} 条记录")
-
-#         except Exception as e:
-#             logger.info(f"为Deployment {deployment_name} 生成预测时出错: {str(e)}")
-
-#     # 打印每个deployment的预测得分均值
-#     logger.info("\n=== 各Deployment预测得分均值 ===")
-#     for deployment_name, mean_score in deployment_scores.items():
-#         logger.info(f"Deployment {deployment_name}: 平均预测CPU使用率 = {mean_score * 100:.2f}%")
-
-#     if deployment_scores:
-#         allocate_pods_based_on_forecast(deployment_scores, namespace)
-#     else:
-#         logger.info("未生成任何预测结果，跳过自动副本调整")
+        evo_logger.info(f"Evolution Strategy - 1 - 未生成任何{metric_display}预测结果, 跳过自动副本调整")
 
 
 def job():
     """每小时执行的任务（带重试机制）"""
+    evo_logger.info("Evolution Strategy - 1 - 定时预测任务启动")
     logger.info(f"开始执行数据导出任务 - {datetime.now()}")
     
     max_retries = 3  # 最大重试次数

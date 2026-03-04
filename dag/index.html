@@ -1,0 +1,2493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kiali-inspired Dashboard</title>
+    <!-- Cytoscape for Graph -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.23.0/cytoscape.min.js"></script>
+    <!-- Dagre layout for hierarchical graphs -->
+    <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
+    <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+    <!-- Chart.js for Metrics -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- External CSS -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+    <div class="sidebar">
+        <div class="sidebar-header">
+            OnlineRagServe
+        </div>
+        <div class="menu-item active" onclick="showView('logical-topology', this)">
+            Logical Topology
+        </div>
+        <div class="menu-item" onclick="showView('traffic-graph', this)">
+            Traffic Graph
+        </div>
+        <div class="menu-item" onclick="showView('prometheus', this)">
+            Metrics Dashboard
+        </div>
+        <div class="menu-item" onclick="showView('evolution-logs', this)">
+            Evolution Logs
+        </div>
+    </div>
+
+    <div class="main-content">
+        <!-- Traffic Graph View -->
+        <div id="traffic-graph" class="view-section" style="padding: 0; display: none; flex-direction: column;">
+            <div class="graph-controls">
+                <div class="control-group">
+                    <span class="control-label">Namespace:</span>
+                    <select class="control-select" id="graph-namespace" onchange="onNamespaceChange()">
+                        <option value="act-test" selected>act-test</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <span class="control-label">Graph Type:</span>
+                    <select class="control-select" id="graph-type">
+                        <option value="versionedApp">Versioned app graph</option>
+                        <option value="app">App graph</option>
+                        <option value="service">Service graph</option>
+                        <option value="workload">Workload graph</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <span class="control-label">Duration:</span>
+                    <select class="control-select" id="graph-duration" onchange="refreshGraph()">
+                        <option value="1m">Last 1m</option>
+                        <option value="5m" selected>Last 5m</option>
+                        <option value="10m">Last 10m</option>
+                        <option value="30m">Last 30m</option>
+                        <option value="1h">Last 1h</option>
+                        <option value="3h">Last 3h</option>
+                        <option value="6h">Last 6h</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <span class="control-label">Layout:</span>
+                    <select class="control-select" id="graph-layout" onchange="changeLayout()">
+                        <option value="dagre" selected>Dagre</option>
+                        <option value="cose">Cose</option>
+                        <option value="grid">Grid</option>
+                        <option value="circle">Circle</option>
+                        <option value="breadthfirst">Breadthfirst</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <button class="control-btn active" id="btn-traffic" onclick="toggleDisplay('traffic')">
+                        Traffic
+                    </button>
+                    <button class="control-btn active" id="btn-security" onclick="toggleDisplay('security')">
+                        Security
+                    </button>
+                </div>
+                <div class="control-group">
+                    <span class="control-label">Auto Refresh:</span>
+                    <select class="control-select" id="graph-auto-refresh" onchange="setGraphAutoRefresh()">
+                        <option value="0">Off</option>
+                        <option value="10">Every 10s</option>
+                        <option value="30">Every 30s</option>
+                        <option value="60">Every 1m</option>
+                        <option value="300">Every 5m</option>
+                    </select>
+                    <span class="auto-refresh-indicator" id="graph-refresh-indicator"></span>
+                </div>
+                <div class="graph-toolbar">
+                    <button class="control-btn" onclick="fitGraph()">⛶ Fit</button>
+                    <button class="refresh-btn" onclick="refreshGraph()">Refresh</button>
+                </div>
+            </div>
+            
+            <div class="graph-wrapper">
+                <div class="graph-container">
+                    <div id="cy"></div>
+                    <!-- Graph Legend -->
+                    <div class="graph-legend">
+                        <div class="legend-title">Legend</div>
+                        <div class="legend-item">
+                            <div class="legend-node" style="background: #fff; border-color: #3e8635;"></div>
+                            <span>App (Healthy)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-node" style="background: #fff; border-color: #c9190b;"></div>
+                            <span>App (Degraded)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-node" style="background: #e7f1fa; border-color: #06c; border-style: dashed;"></div>
+                            <span>Service</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-edge" style="background: #3e8635;"></div>
+                            <span>HTTP (success)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-edge" style="background: #c9190b;"></div>
+                            <span>HTTP (error)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-edge" style="background: #06c;"></div>
+                            <span>mTLS</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Right Sidebar Details Panel - Kiali Style -->
+                <div class="right-sidebar" id="graph-details">
+                    <!-- Default State: Graph Summary -->
+                    <div id="details-default">
+                        <div class="right-sidebar-header">
+                            Graph Summary
+                        </div>
+                        <div class="right-sidebar-content">
+                            <div class="tab-content active">
+                                <div class="detail-section">
+                                    <div class="detail-section-title">Current Selection</div>
+                                    <div class="detail-item">
+                                        <span class="detail-label">Namespace</span>
+                                        <span class="detail-value" id="ns-summary">act-test</span>
+                                    </div>
+                                    <div class="detail-item">
+                                        <span class="detail-label">Duration</span>
+                                        <span class="detail-value" id="duration-summary">Last 5m</span>
+                                    </div>
+                                </div>
+                                <div class="detail-section">
+                                    <div class="detail-section-title">Graph Statistics</div>
+                                    <div class="detail-item">
+                                        <span class="detail-label">Apps</span>
+                                        <span class="detail-value" id="app-count">0</span>
+                                    </div>
+                                    <div class="detail-item">
+                                        <span class="detail-label">Services</span>
+                                        <span class="detail-value" id="service-count">0</span>
+                                    </div>
+                                    <div class="detail-item">
+                                        <span class="detail-label">Workloads</span>
+                                        <span class="detail-value" id="workload-count">0</span>
+                                    </div>
+                                    <div class="detail-item">
+                                        <span class="detail-label">Edges</span>
+                                        <span class="detail-value" id="edge-count">0</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Selected Node State -->
+                    <div id="details-selected" style="display: none;">
+                        <div class="right-sidebar-header" id="selected-header">
+                            <div class="node-icon" id="selected-icon" style="background: #3e8635;">W</div>
+                            <span id="selected-title">Service Name</span>
+                        </div>
+                        <div class="sidebar-tabs">
+                            <div class="sidebar-tab active" onclick="switchTab('info', this)">Info</div>
+                            <div class="sidebar-tab" onclick="switchTab('traffic', this)">Traffic</div>
+                            <div class="sidebar-tab" onclick="switchTab('traces', this)">Traces</div>
+                        </div>
+                        <div class="right-sidebar-content">
+                            <!-- Info Tab -->
+                            <div class="tab-content active" id="tab-info">
+                                <div class="detail-section">
+                                    <div class="detail-section-title">Overview</div>
+                                    <div class="detail-item">
+                                        <span class="detail-label">Type</span>
+                                        <span class="detail-value" id="sel-type">Workload</span>
+                                    </div>
+                                    <div class="detail-item">
+                                        <span class="detail-label">Namespace</span>
+                                        <span class="detail-value" id="sel-namespace">act-test</span>
+                                    </div>
+                                    <div class="detail-item">
+                                        <span class="detail-label">Health</span>
+                                        <span class="detail-value">
+                                            <span class="health-badge healthy" id="sel-health">
+                                                <span class="health-dot healthy"></span>
+                                                Healthy
+                                            </span>
+                                        </span>
+                                    </div>
+                                </div>
+                                <div class="detail-section">
+                                    <div class="detail-section-title">Deployment</div>
+                                    <div class="detail-item">
+                                        <span class="detail-label">Replicas</span>
+                                        <span class="detail-value" id="sel-replicas">1/1</span>
+                                    </div>
+                                    <div class="detail-item">
+                                        <span class="detail-label">Version</span>
+                                        <span class="detail-value" id="sel-version">v1</span>
+                                    </div>
+                                    <div class="detail-item">
+                                        <span class="detail-label">Created</span>
+                                        <span class="detail-value" id="sel-created">-</span>
+                                    </div>
+                                </div>
+                                <div class="detail-section">
+                                    <div class="detail-section-title">Labels</div>
+                                    <div class="labels-list" id="sel-labels">
+                                        <span class="label-tag">app=service</span>
+                                        <span class="label-tag">version=v1</span>
+                                    </div>
+                                </div>
+                                <div class="detail-section">
+                                    <div class="detail-section-title">Istio Config</div>
+                                    <div class="detail-item">
+                                        <span class="detail-label">Sidecar</span>
+                                        <span class="detail-value status-healthy" id="sel-sidecar">✓ Injected</span>
+                                    </div>
+                                    <div class="detail-item">
+                                        <span class="detail-label">mTLS</span>
+                                        <span class="detail-value" id="sel-mtls">STRICT</span>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Traffic Tab -->
+                            <div class="tab-content" id="tab-traffic">
+                                <div class="detail-section">
+                                    <div class="detail-section-title">HTTP Metrics</div>
+                                    <div class="traffic-metric">
+                                        <div class="traffic-metric-header">
+                                            <span class="traffic-metric-title">Request Rate</span>
+                                        </div>
+                                        <div>
+                                            <span class="traffic-metric-value" id="sel-rps">0.00</span>
+                                            <span class="traffic-metric-unit">req/s</span>
+                                        </div>
+                                    </div>
+                                    <div class="traffic-metric">
+                                        <div class="traffic-metric-header">
+                                            <span class="traffic-metric-title">Success Rate</span>
+                                        </div>
+                                        <div>
+                                            <span class="traffic-metric-value" id="sel-success-rate">100</span>
+                                            <span class="traffic-metric-unit">%</span>
+                                        </div>
+                                        <div class="traffic-bar" style="margin-top: 8px;">
+                                            <div class="traffic-bar-fill success" id="sel-success-bar" style="width: 100%;"></div>
+                                        </div>
+                                    </div>
+                                    <div class="traffic-metric">
+                                        <div class="traffic-metric-header">
+                                            <span class="traffic-metric-title">Error Rate</span>
+                                        </div>
+                                        <div>
+                                            <span class="traffic-metric-value" id="sel-error-rate">0.00</span>
+                                            <span class="traffic-metric-unit">%</span>
+                                        </div>
+                                        <div class="traffic-bar" style="margin-top: 8px;">
+                                            <div class="traffic-bar-fill error" id="sel-error-bar" style="width: 0%;"></div>
+                                        </div>
+                                    </div>
+                                    <div class="traffic-metric">
+                                        <div class="traffic-metric-header">
+                                            <span class="traffic-metric-title">P50 Latency</span>
+                                        </div>
+                                        <div>
+                                            <span class="traffic-metric-value" id="sel-p50">0</span>
+                                            <span class="traffic-metric-unit">ms</span>
+                                        </div>
+                                    </div>
+                                    <div class="traffic-metric">
+                                        <div class="traffic-metric-header">
+                                            <span class="traffic-metric-title">P99 Latency</span>
+                                        </div>
+                                        <div>
+                                            <span class="traffic-metric-value" id="sel-p99">0</span>
+                                            <span class="traffic-metric-unit">ms</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="detail-section">
+                                    <div class="detail-section-title">Inbound Traffic</div>
+                                    <ul class="traffic-list" id="sel-inbound">
+                                        <li class="traffic-list-item">
+                                            <div class="traffic-source-icon" style="background: #6a6e73;">?</div>
+                                            <div class="traffic-source-info">
+                                                <div class="traffic-source-name">No inbound traffic</div>
+                                            </div>
+                                        </li>
+                                    </ul>
+                                </div>
+                                <div class="detail-section">
+                                    <div class="detail-section-title">Outbound Traffic</div>
+                                    <ul class="traffic-list" id="sel-outbound">
+                                        <li class="traffic-list-item">
+                                            <div class="traffic-source-icon" style="background: #6a6e73;">?</div>
+                                            <div class="traffic-source-info">
+                                                <div class="traffic-source-name">No outbound traffic</div>
+                                            </div>
+                                        </li>
+                                    </ul>
+                                </div>
+                            </div>
+                            
+                            <!-- Traces Tab -->
+                            <div class="tab-content" id="tab-traces">
+                                <div class="detail-section">
+                                    <div class="detail-section-title">Recent Traces</div>
+                                    <p style="color: #6a6e73; font-size: 0.85em;">
+                                        Connect to Jaeger to view distributed traces for this service.
+                                    </p>
+                                    <button class="control-btn" style="margin-top: 10px;">
+                                        View in Jaeger →
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Logical Topology View -->
+        <div id="logical-topology" class="view-section active" style="padding: 0; display: flex; flex-direction: column;">
+            <div class="graph-controls">
+                <div class="control-group">
+                    <span class="control-label">Pipeline:</span>
+                    <select class="control-select" id="topology-pipeline" onchange="filterTopologyPipeline()">
+                        <option value="all" selected>All Pipelines</option>
+                        <option value="ingestion">Document Ingestion</option>
+                        <option value="query">Query & Retrieval</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <span class="control-label">Layout:</span>
+                    <select class="control-select" id="topology-layout" onchange="changeTopologyLayout()">
+                        <option value="dagre" selected>Dagre (Hierarchical)</option>
+                        <option value="breadthfirst">Breadthfirst</option>
+                        <option value="cose">Cose</option>
+                    </select>
+                </div>
+                <div class="graph-toolbar">
+                    <button class="control-btn" onclick="fitTopologyGraph()">⛶ Fit</button>
+                    <button class="refresh-btn" onclick="fetchLogicalTopology()">Refresh</button>
+                </div>
+            </div>
+            
+            <div class="graph-wrapper">
+                <div class="graph-container">
+                    <div id="cy-topology"></div>
+                    <!-- Graph Legend -->
+                    <div class="graph-legend">
+                        <div class="legend-title">Legend</div>
+                        <div class="legend-item">
+                            <div class="legend-node" style="background: #e8f5e9; border-color: #4caf50; border-radius: 50%;"></div>
+                            <span>Entry Point</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-node" style="background: #e3f2fd; border-color: #2196f3;"></div>
+                            <span>Service</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-node" style="background: #fff3e0; border-color: #ff9800;"></div>
+                            <span>Processor</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-node" style="background: #f3e5f5; border-color: #9c27b0;"></div>
+                            <span>Storage</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-node" style="background: #e0f7fa; border-color: #00bcd4; border-radius: 50%;"></div>
+                            <span>Output</span>
+                        </div>
+                        <div class="legend-item" style="margin-top: 8px;">
+                            <div class="legend-edge" style="background: #3e8635;"></div>
+                            <span>Ingestion Flow</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-edge" style="background: #06c;"></div>
+                            <span>Query Flow</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Right Sidebar Details Panel -->
+                <div class="right-sidebar" id="topology-details">
+                    <div id="topology-details-default">
+                        <div class="right-sidebar-header">
+                            <span>Logical Topology</span>
+                        </div>
+                        <div class="right-sidebar-content" style="padding: 16px;">
+                            <div class="detail-section">
+                                <div class="detail-section-title">Overview</div>
+                                <p style="font-size: 0.85em; color: #6a6e73; line-height: 1.5;">
+                                    This view shows the logical data flow of the RAG (Retrieval-Augmented Generation) system.
+                                </p>
+                            </div>
+                            <div class="detail-section">
+                                <div class="detail-section-title">Pipelines</div>
+                                <div class="detail-item">
+                                    <span class="detail-label">Document Ingestion</span>
+                                    <span class="detail-value" style="color: #3e8635;">●</span>
+                                </div>
+                                <div class="detail-item">
+                                    <span class="detail-label">Query & Retrieval</span>
+                                    <span class="detail-value" style="color: #06c;">●</span>
+                                </div>
+                            </div>
+                            <div class="detail-section">
+                                <div class="detail-section-title">Components</div>
+                                <div class="detail-item">
+                                    <span class="detail-label">Total Nodes</span>
+                                    <span class="detail-value" id="topology-node-count">0</span>
+                                </div>
+                                <div class="detail-item">
+                                    <span class="detail-label">Total Edges</span>
+                                    <span class="detail-value" id="topology-edge-count">0</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div id="topology-details-selected" style="display: none;">
+                        <div class="right-sidebar-header">
+                            <div class="node-icon" id="topology-selected-icon" style="background: #06c;">N</div>
+                            <span id="topology-selected-title">Node Name</span>
+                        </div>
+                        <div class="right-sidebar-content" style="padding: 16px;">
+                            <div class="detail-section">
+                                <div class="detail-section-title">Node Info</div>
+                                <div class="detail-item">
+                                    <span class="detail-label">Type</span>
+                                    <span class="detail-value" id="topology-sel-type">-</span>
+                                </div>
+                                <div class="detail-item">
+                                    <span class="detail-label">Description</span>
+                                </div>
+                                <p style="font-size: 0.85em; color: #151515; margin-top: 4px;" id="topology-sel-description">-</p>
+                            </div>
+                            <div class="detail-section">
+                                <div class="detail-section-title">Connections</div>
+                                <div class="detail-item">
+                                    <span class="detail-label">Inbound</span>
+                                    <span class="detail-value" id="topology-sel-inbound">0</span>
+                                </div>
+                                <div class="detail-item">
+                                    <span class="detail-label">Outbound</span>
+                                    <span class="detail-value" id="topology-sel-outbound">0</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Prometheus View - Istio Control Plane Dashboard Style -->
+        <div id="prometheus" class="view-section">
+            <div class="prometheus-header">
+                <h2>Observability Dashboard</h2>
+                <div class="time-range-selector">
+                    <div class="ns-selector">
+                        <label>Namespace:</label>
+                        <select id="prom-namespace">
+                            <option value="act-test" selected>act-test</option>
+                        </select>
+                        <button class="refresh-btn" style="padding: 4px 8px; font-size: 0.85em;" onclick="fetchNamespaces()">⟳</button>
+                    </div>
+                    <select id="time-range" onchange="fetchIstioMetrics()">
+                        <option value="5m">Last 5 minutes</option>
+                        <option value="15m">Last 15 minutes</option>
+                        <option value="30m" selected>Last 30 minutes</option>
+                        <option value="1h">Last 1 hour</option>
+                        <option value="3h">Last 3 hours</option>
+                    </select>
+                    <select id="metrics-auto-refresh" onchange="setMetricsAutoRefresh()">
+                        <option value="0">Auto: Off</option>
+                        <option value="10">Every 10s</option>
+                        <option value="30">Every 30s</option>
+                        <option value="60">Every 1m</option>
+                        <option value="300">Every 5m</option>
+                    </select>
+                    <span class="auto-refresh-indicator" id="metrics-refresh-indicator"></span>
+                    <button class="refresh-btn" onclick="fetchIstioMetrics()">Refresh</button>
+                </div>
+            </div>
+
+            <!-- For Predict Section -->
+            <div class="section-title">For Predict (by Deployment)</div>
+            <div class="panel-row panel-row-4">
+                <div class="panel">
+                    <div class="panel-header">
+                        <h4 class="panel-title">CPU Usage by Deployment</h4>
+                    </div>
+                    <div class="panel-body">
+                        <div class="chart-container"><canvas id="predictCpuChart"></canvas></div>
+                        <div class="chart-legend" id="predictCpuChart-legend"></div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">
+                        <h4 class="panel-title">GPU Utilization by Deployment (%)</h4>
+                    </div>
+                    <div class="panel-body">
+                        <div class="chart-container"><canvas id="predictGpuChart"></canvas></div>
+                        <div class="chart-legend" id="predictGpuChart-legend"></div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">
+                        <h4 class="panel-title">QPS by Deployment</h4>
+                    </div>
+                    <div class="panel-body">
+                        <div class="chart-container"><canvas id="predictQpsChart"></canvas></div>
+                        <div class="chart-legend" id="predictQpsChart-legend"></div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">
+                        <h4 class="panel-title">Pod Count by Deployment</h4>
+                    </div>
+                    <div class="panel-body">
+                        <div class="chart-container"><canvas id="predictPodChart"></canvas></div>
+                        <div class="chart-legend" id="predictPodChart-legend"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Request Data Section -->
+            <div class="section-title">Request Data</div>
+            <div class="panel-row panel-row-4">
+                <div class="panel">
+                    <div class="panel-header">
+                        <h4 class="panel-title">QPS (Requests/sec)</h4>
+                    </div>
+                    <div class="panel-body">
+                        <div class="chart-container"><canvas id="qpsChart"></canvas></div>
+                        <div class="chart-legend" id="qpsChart-legend"></div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">
+                        <h4 class="panel-title">Request Latency (P95)</h4>
+                    </div>
+                    <div class="panel-body">
+                        <div class="chart-container"><canvas id="latencyChart"></canvas></div>
+                        <div class="chart-legend" id="latencyChart-legend"></div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">
+                        <h4 class="panel-title">HTTP 5xx Error Rate</h4>
+                    </div>
+                    <div class="panel-body">
+                        <div class="chart-container"><canvas id="errorRateChart"></canvas></div>
+                        <div class="chart-legend" id="errorRateChart-legend"></div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">
+                        <h4 class="panel-title">GPU Memory Usage (MiB)</h4>
+                    </div>
+                    <div class="panel-body">
+                        <div class="chart-container"><canvas id="gpuMemoryChart"></canvas></div>
+                        <div class="chart-legend" id="gpuMemoryChart-legend"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Resource Usage Section -->
+            <div class="section-title">Resource Usage</div>
+            <div class="panel-row panel-row-4">
+                <div class="panel">
+                    <div class="panel-header">
+                        <h4 class="panel-title">Memory Usage</h4>
+                    </div>
+                    <div class="panel-body">
+                        <div class="chart-container"><canvas id="memoryUsageChart"></canvas></div>
+                        <div class="chart-legend" id="memoryUsageChart-legend"></div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">
+                        <h4 class="panel-title">Memory Allocations</h4>
+                    </div>
+                    <div class="panel-body">
+                        <div class="chart-container"><canvas id="memoryAllocChart"></canvas></div>
+                        <div class="chart-legend" id="memoryAllocChart-legend"></div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">
+                        <h4 class="panel-title">CPU Usage</h4>
+                    </div>
+                    <div class="panel-body">
+                        <div class="chart-container"><canvas id="cpuUsageChart"></canvas></div>
+                        <div class="chart-legend" id="cpuUsageChart-legend"></div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">
+                        <h4 class="panel-title">Goroutines</h4>
+                    </div>
+                    <div class="panel-body">
+                        <div class="chart-container"><canvas id="goroutinesChart"></canvas></div>
+                        <div class="chart-legend" id="goroutinesChart-legend"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Webhooks Section -->
+            <div class="section-title">Webhooks</div>
+            <div class="panel-row panel-row-2">
+                <div class="panel">
+                    <div class="panel-header">
+                        <h4 class="panel-title">Validation</h4>
+                    </div>
+                    <div class="panel-body">
+                        <div class="chart-container"><canvas id="validationChart"></canvas></div>
+                        <div class="chart-legend" id="validationChart-legend"></div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">
+                        <h4 class="panel-title">Injection</h4>
+                    </div>
+                    <div class="panel-body">
+                        <div class="chart-container"><canvas id="injectionChart"></canvas></div>
+                        <div class="chart-legend" id="injectionChart-legend"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Evolution Logs View -->
+        <div id="evolution-logs" class="view-section" style="padding: 0; display: none; flex-direction: column;">
+            <div class="graph-controls">
+                <div class="control-group">
+                    <span class="control-label">Namespace:</span>
+                    <select class="control-select" id="logs-namespace">
+                        <option value="act-test" selected>act-test</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <span class="control-label">Strategy:</span>
+                    <select class="control-select" id="logs-strategy-filter" onchange="fetchEvolutionLogs()">
+                        <option value="">All Strategies</option>
+                        <option value="1">Strategy 1 - 微服务副本调整</option>
+                        <option value="2">Strategy 2 - 服务拓扑调整</option>
+                        <option value="3">Strategy 3 - 数据流优化</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <span class="control-label">Tail Lines:</span>
+                    <select class="control-select" id="logs-tail-lines" onchange="fetchEvolutionLogs()">
+                        <option value="500">500</option>
+                        <option value="1000" selected>1000</option>
+                        <option value="2000">2000</option>
+                        <option value="5000">5000</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <span class="control-label">Search:</span>
+                    <input type="text" id="logs-search" class="control-select" style="width: 160px;" placeholder="Filter logs..." oninput="filterDisplayedLogs()">
+                </div>
+                <div class="control-group">
+                    <span class="control-label">Auto Refresh:</span>
+                    <select class="control-select" id="logs-auto-refresh" onchange="setLogsAutoRefresh()">
+                        <option value="0">Off</option>
+                        <option value="10">Every 10s</option>
+                        <option value="30">Every 30s</option>
+                        <option value="60">Every 1m</option>
+                    </select>
+                    <span class="auto-refresh-indicator" id="logs-refresh-indicator"></span>
+                </div>
+                <div class="graph-toolbar">
+                    <button class="refresh-btn" onclick="fetchEvolutionLogs()">Refresh</button>
+                </div>
+            </div>
+
+            <!-- Logs Summary Bar -->
+            <div class="logs-summary-bar">
+                <span class="logs-summary-item">
+                    <span class="logs-badge logs-badge-total" id="logs-total-count">0</span> Total
+                </span>
+                <span class="logs-summary-item">
+                    <span class="logs-badge logs-badge-s1" id="logs-s1-count">0</span> Strategy 1
+                </span>
+                <span class="logs-summary-item">
+                    <span class="logs-badge logs-badge-s2" id="logs-s2-count">0</span> Strategy 2
+                </span>
+                <span class="logs-summary-item">
+                    <span class="logs-badge logs-badge-s3" id="logs-s3-count">0</span> Strategy 3
+                </span>
+            </div>
+
+            <!-- Logs Container -->
+            <div class="logs-container" id="logs-container">
+                <div class="logs-placeholder">
+                    <p>Click <strong>Refresh</strong> to load Evolution Strategy logs from cluster pods.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- View Switching ---
+        function showView(viewId, menuItem) {
+            document.querySelectorAll('.view-section').forEach(el => {
+                el.classList.remove('active');
+                if (el.id === viewId) {
+                    if (viewId === 'traffic-graph' || viewId === 'logical-topology') el.style.display = 'flex';
+                    else if (viewId === 'evolution-logs') el.style.display = 'flex';
+                    else el.style.display = 'block';
+                } else {
+                    el.style.display = 'none';
+                }
+            });
+
+            document.querySelectorAll('.menu-item').forEach(el => el.classList.remove('active'));
+            menuItem.classList.add('active');
+
+            if(viewId === 'traffic-graph') {
+                refreshGraph();
+                if (cy) {
+                    cy.resize();
+                    cy.fit(50);
+                }
+            } else if (viewId === 'logical-topology') {
+                fetchLogicalTopology();
+                if (cyTopology) {
+                    cyTopology.resize();
+                    cyTopology.fit(50);
+                }
+            } else if (viewId === 'prometheus') {
+                fetchIstioMetrics();
+            } else if (viewId === 'evolution-logs') {
+                fetchEvolutionLogs();
+            }
+        }
+
+        // --- Graph Logic ---
+        let cy;
+
+        function initGraph(data) {
+            updateSidebarCounts(data);
+
+            if (cy) {
+                cy.json({ elements: data });
+                const layoutType = document.getElementById('graph-layout')?.value || 'dagre';
+                const layoutOptions = {
+                    name: layoutType, 
+                    animate: true,
+                    padding: 80,
+                    nodeDimensionsIncludeLabels: true
+                };
+                // dagre specific options for hierarchical layout
+                if (layoutType === 'dagre') {
+                    layoutOptions.rankDir = 'LR';
+                    layoutOptions.nodeSep = 80;
+                    layoutOptions.rankSep = 120;
+                } else {
+                    layoutOptions.nodeRepulsion = 8000;
+                    layoutOptions.idealEdgeLength = 120;
+                }
+                cy.layout(layoutOptions).run();
+                cy.zoom(1.6);
+                cy.center();
+                return;
+            }
+
+            cy = cytoscape({
+                container: document.getElementById('cy'),
+                elements: data,
+                style: [
+                    // Kiali-style node styling
+                    {
+                        selector: 'node',
+                        style: {
+                            'background-color': '#fff',
+                            'border-width': 2,
+                            'border-color': '#3e8635', // Green for healthy
+                            'label': 'data(label)',
+                            'width': '32px',
+                            'height': '32px',
+                            'shape': 'ellipse',
+                            'text-valign': 'bottom',
+                            'text-halign': 'center',
+                            'text-margin-y': '6px',
+                            'font-size': '11px',
+                            'font-weight': 500,
+                            'color': '#151515',
+                            'text-background-color': '#fff',
+                            'text-background-opacity': 1,
+                            'text-background-padding': '3px',
+                            'text-background-shape': 'roundrectangle'
+                        }
+                    },
+                    // App nodes
+                    {
+                        selector: 'node[type="app"]',
+                        style: {
+                            'shape': 'ellipse',
+                            'border-color': '#3e8635'
+                        }
+                    },
+                    // Workload nodes
+                    {
+                        selector: 'node[type="workload"]',
+                        style: {
+                            'shape': 'round-rectangle',
+                            'border-color': '#06c',
+                            'width': '28px',
+                            'height': '28px'
+                        }
+                    },
+                    // Service nodes - Triangle/Diamond style
+                    {
+                        selector: 'node[type="service"]',
+                        style: {
+                            'shape': 'triangle',
+                            'background-color': '#e7f1fa',
+                            'border-color': '#06c',
+                            'border-width': 2,
+                            'width': '30px',
+                            'height': '30px'
+                        }
+                    },
+                    // Healthy status
+                    {
+                        selector: 'node[status="healthy"]',
+                        style: {
+                            'border-color': '#3e8635'
+                        }
+                    },
+                    // Degraded status
+                    {
+                        selector: 'node[status="degraded"]',
+                        style: {
+                            'border-color': '#c9190b'
+                        }
+                    },
+                    // Idle/Unknown status
+                    {
+                        selector: 'node[status="idle"]',
+                        style: {
+                            'border-color': '#6a6e73',
+                            'border-style': 'dashed'
+                        }
+                    },
+                    // Unknown nodes (external)
+                    {
+                        selector: 'node[type="unknown"]',
+                        style: {
+                            'background-color': '#f0f0f0',
+                            'border-style': 'dashed',
+                            'border-color': '#6a6e73'
+                        }
+                    },
+                    // Selected node
+                    {
+                        selector: 'node:selected',
+                        style: {
+                            'border-width': 4,
+                            'border-color': '#06c',
+                            'overlay-color': '#06c',
+                            'overlay-opacity': 0.1
+                        }
+                    },
+                    // Edge base style
+                    {
+                        selector: 'edge',
+                        style: {
+                            'width': 2,
+                            'line-color': '#3e8635',
+                            'target-arrow-color': '#3e8635',
+                            'target-arrow-shape': 'triangle',
+                            'curve-style': 'bezier',
+                            'arrow-scale': 0.8,
+                            'label': 'data(label)',
+                            'font-size': '10px',
+                            'text-rotation': 'autorotate',
+                            'text-background-opacity': 1,
+                            'text-background-color': '#fff',
+                            'text-background-padding': '3px',
+                            'color': '#6a6e73'
+                        }
+                    },
+                    // mTLS edge
+                    {
+                        selector: 'edge[mtls]',
+                        style: {
+                            'line-color': '#06c',
+                            'target-arrow-color': '#06c'
+                        }
+                    },
+                    // Error edge
+                    {
+                        selector: 'edge[errorRate > 0]',
+                        style: {
+                            'line-color': '#c9190b',
+                            'target-arrow-color': '#c9190b'
+                        }
+                    },
+                    // Network/logic edge styles
+                    {
+                        selector: 'edge[type="logic"]',
+                        style: {
+                            'line-style': 'solid',
+                            'line-color': '#06c',
+                            'target-arrow-color': '#06c'
+                        }
+                    },
+                    {
+                        selector: 'edge[type="network"]',
+                        style: {
+                            'line-style': 'dashed',
+                            'line-color': '#6a6e73',
+                            'target-arrow-color': '#6a6e73',
+                            'width': 1
+                        }
+                    }
+                ],
+                layout: {
+                    name: 'dagre',
+                    rankDir: 'LR',
+                    nodeSep: 80,
+                    rankSep: 120,
+                    padding: 80,
+                    nodeDimensionsIncludeLabels: true
+                },
+                wheelSensitivity: 0.3,
+                minZoom: 0.2,
+                maxZoom: 3,
+                zoom: 1.6
+            });
+
+            // Tap event for sidebar details
+            cy.on('tap', 'node', function(evt){
+                const node = evt.target;
+                showNodeDetails(node.data());
+            });
+
+            cy.on('tap', function(evt){
+                if(evt.target === cy){
+                    showDefaultSidebar();
+                }
+            });
+        }
+
+        function updateSidebarCounts(elements) {
+            // Namespace
+            const ns = document.getElementById('graph-namespace')?.value || 'act-test';
+            document.getElementById('ns-summary').textContent = ns;
+
+            // Counts
+            let appCount = 0;
+            let svcCount = 0;
+            let workloadCount = 0;
+            let edgeCount = 0;
+
+            elements.forEach(el => {
+                if(el.data.source && el.data.target) {
+                    edgeCount++;
+                } else if(el.data.id) {
+                    if(el.data.type === 'app') appCount++;
+                    else if(el.data.type === 'service') svcCount++;
+                    else workloadCount++;
+                }
+            });
+
+            document.getElementById('app-count').textContent = appCount;
+            document.getElementById('service-count').textContent = svcCount;
+            document.getElementById('workload-count').textContent = workloadCount;
+            document.getElementById('edge-count').textContent = edgeCount;
+        }
+
+        // Switch sidebar tabs
+        function switchTab(tabName, element) {
+            // Update tab buttons
+            document.querySelectorAll('.sidebar-tab').forEach(tab => tab.classList.remove('active'));
+            element.classList.add('active');
+            
+            // Update tab content
+            document.querySelectorAll('#details-selected .tab-content').forEach(content => content.classList.remove('active'));
+            document.getElementById('tab-' + tabName).classList.add('active');
+        }
+
+        // Toggle display buttons
+        function toggleDisplay(type) {
+            const trafficBtn = document.getElementById('btn-traffic');
+            const securityBtn = document.getElementById('btn-security');
+            
+            if (type === 'traffic') {
+                trafficBtn.classList.toggle('active');
+            } else {
+                securityBtn.classList.toggle('active');
+            }
+            
+            // Update graph styling based on toggle
+            updateGraphDisplay();
+        }
+
+        function updateGraphDisplay() {
+            // This can update edge styles based on selected display options
+            if (!cy) return;
+            const showTraffic = document.getElementById('btn-traffic').classList.contains('active');
+            const showSecurity = document.getElementById('btn-security').classList.contains('active');
+            
+            cy.edges().forEach(edge => {
+                const data = edge.data();
+                if (showSecurity && data.mtls) {
+                    edge.style('line-color', '#06c');
+                } else if (data.errorRate > 0) {
+                    edge.style('line-color', '#c9190b');
+                } else {
+                    edge.style('line-color', '#3e8635');
+                }
+            });
+        }
+
+        function fitGraph() {
+            if (cy) {
+                cy.fit(50);
+            }
+        }
+
+        function changeLayout() {
+            if (!cy) return;
+            const layout = document.getElementById('graph-layout').value;
+            const layoutOptions = {
+                name: layout,
+                padding: 80,
+                animate: true,
+                animationDuration: 500,
+                nodeDimensionsIncludeLabels: true
+            };
+            // dagre specific options for hierarchical layout
+            if (layout === 'dagre') {
+                layoutOptions.rankDir = 'LR';
+                layoutOptions.nodeSep = 80;
+                layoutOptions.rankSep = 120;
+            } else {
+                layoutOptions.nodeRepulsion = 8000;
+                layoutOptions.idealEdgeLength = 120;
+            }
+            cy.layout(layoutOptions).run();
+        }
+
+        function onNamespaceChange() {
+            const ns = document.getElementById('graph-namespace').value;
+            document.getElementById('ns-summary').textContent = ns;
+            refreshGraph();
+        }
+
+        async function showNodeDetails(data) {
+            document.getElementById('details-default').style.display = 'none';
+            document.getElementById('details-selected').style.display = 'block';
+            
+            // Reset to Info tab
+            document.querySelectorAll('.sidebar-tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelector('.sidebar-tab').classList.add('active');
+            document.querySelectorAll('#details-selected .tab-content').forEach(content => content.classList.remove('active'));
+            document.getElementById('tab-info').classList.add('active');
+
+            // Set header
+            const nodeType = data.type || 'workload';
+            const icon = nodeType === 'service' ? 'S' : nodeType === 'app' ? 'A' : 'W';
+            const iconBg = data.status === 'healthy' ? '#3e8635' : data.status === 'degraded' ? '#c9190b' : '#6a6e73';
+            
+            document.getElementById('selected-icon').textContent = icon;
+            document.getElementById('selected-icon').style.background = iconBg;
+            document.getElementById('selected-title').textContent = data.id || data.label || 'Unknown';
+
+            // Info tab
+            document.getElementById('sel-type').textContent = nodeType.charAt(0).toUpperCase() + nodeType.slice(1);
+            document.getElementById('sel-namespace').textContent = document.getElementById('graph-namespace')?.value || 'act-test';
+            
+            const healthEl = document.getElementById('sel-health');
+            const healthStatus = data.status || 'idle';
+            healthEl.innerHTML = `<span class="health-dot ${healthStatus}"></span> ${healthStatus.charAt(0).toUpperCase() + healthStatus.slice(1)}`;
+            healthEl.className = 'health-badge ' + healthStatus;
+            
+            document.getElementById('sel-replicas').textContent = data.replicas || '1/1';
+            document.getElementById('sel-version').textContent = data.version || 'v1';
+            document.getElementById('sel-created').textContent = data.created || '-';
+            
+            // Labels
+            const labelsEl = document.getElementById('sel-labels');
+            const labels = data.labels || {app: data.id, version: 'v1'};
+            labelsEl.innerHTML = Object.entries(labels).map(([k, v]) => 
+                `<span class="label-tag">${k}=${v}</span>`
+            ).join('');
+            
+            // Sidecar & mTLS
+            document.getElementById('sel-sidecar').textContent = data.sidecar ? '✓ Injected' : '✗ Not injected';
+            document.getElementById('sel-sidecar').className = 'detail-value ' + (data.sidecar !== false ? 'status-healthy' : 'status-degraded');
+            document.getElementById('sel-mtls').textContent = data.mtls || 'STRICT';
+
+            // Fetch traffic metrics for this node
+            await fetchNodeMetrics(data.id);
+            
+            // Update traffic sources
+            updateTrafficSources(data);
+        }
+
+        async function fetchNodeMetrics(nodeName) {
+            const ns = document.getElementById('graph-namespace')?.value || 'act-test';
+            const duration = getGraphDuration();
+            
+            try {
+                // Request rate
+                const rpsQuery = `sum(rate(istio_requests_total{destination_workload="${nodeName}",destination_workload_namespace="${ns}"}[${duration}]))`;
+                const rpsResult = await queryPrometheusInstant(rpsQuery);
+                const rps = rpsResult?.data?.result?.[0]?.value?.[1] || 0;
+                document.getElementById('sel-rps').textContent = parseFloat(rps).toFixed(2);
+                
+                // Success rate
+                const successQuery = `sum(rate(istio_requests_total{destination_workload="${nodeName}",destination_workload_namespace="${ns}",response_code=~"2.."}[${duration}])) / sum(rate(istio_requests_total{destination_workload="${nodeName}",destination_workload_namespace="${ns}"}[${duration}])) * 100`;
+                const successResult = await queryPrometheusInstant(successQuery);
+                const successRate = successResult?.data?.result?.[0]?.value?.[1] || 100;
+                const successVal = isNaN(parseFloat(successRate)) ? 100 : parseFloat(successRate).toFixed(1);
+                document.getElementById('sel-success-rate').textContent = successVal;
+                document.getElementById('sel-success-bar').style.width = successVal + '%';
+                
+                // Error rate
+                const errorRate = (100 - parseFloat(successVal)).toFixed(2);
+                document.getElementById('sel-error-rate').textContent = Math.max(0, errorRate);
+                document.getElementById('sel-error-bar').style.width = Math.max(0, errorRate) + '%';
+                
+                // P50 Latency
+                const p50Query = `histogram_quantile(0.50, sum(rate(istio_request_duration_milliseconds_bucket{destination_workload="${nodeName}",destination_workload_namespace="${ns}"}[${duration}])) by (le))`;
+                const p50Result = await queryPrometheusInstant(p50Query);
+                const p50 = p50Result?.data?.result?.[0]?.value?.[1] || 0;
+                document.getElementById('sel-p50').textContent = parseFloat(p50).toFixed(0);
+                
+                // P99 Latency
+                const p99Query = `histogram_quantile(0.99, sum(rate(istio_request_duration_milliseconds_bucket{destination_workload="${nodeName}",destination_workload_namespace="${ns}"}[${duration}])) by (le))`;
+                const p99Result = await queryPrometheusInstant(p99Query);
+                const p99 = p99Result?.data?.result?.[0]?.value?.[1] || 0;
+                document.getElementById('sel-p99').textContent = parseFloat(p99).toFixed(0);
+                
+            } catch(e) {
+                console.error('Error fetching node metrics:', e);
+            }
+        }
+
+        function updateTrafficSources(nodeData) {
+            // Get edges connected to this node from cytoscape
+            if (!cy) return;
+            
+            const nodeId = nodeData.id;
+            const inboundEdges = cy.edges(`[target = "${nodeId}"]`);
+            const outboundEdges = cy.edges(`[source = "${nodeId}"]`);
+            
+            // Update inbound traffic list
+            const inboundEl = document.getElementById('sel-inbound');
+            if (inboundEdges.length === 0) {
+                inboundEl.innerHTML = `
+                    <li class="traffic-list-item">
+                        <div class="traffic-source-icon" style="background: #6a6e73;">?</div>
+                        <div class="traffic-source-info">
+                            <div class="traffic-source-name">No inbound traffic</div>
+                        </div>
+                    </li>`;
+            } else {
+                inboundEl.innerHTML = inboundEdges.map(edge => {
+                    const sourceData = cy.getElementById(edge.data('source')).data();
+                    const icon = sourceData.type === 'service' ? 'S' : 'W';
+                    const rate = edge.data('rate') || '0.00';
+                    return `
+                        <li class="traffic-list-item">
+                            <div class="traffic-source-icon" style="background: #3e8635;">${icon}</div>
+                            <div class="traffic-source-info">
+                                <div class="traffic-source-name">${sourceData.id || sourceData.label}</div>
+                                <div class="traffic-source-rate">${rate} req/s</div>
+                            </div>
+                        </li>`;
+                }).join('');
+            }
+            
+            // Update outbound traffic list
+            const outboundEl = document.getElementById('sel-outbound');
+            if (outboundEdges.length === 0) {
+                outboundEl.innerHTML = `
+                    <li class="traffic-list-item">
+                        <div class="traffic-source-icon" style="background: #6a6e73;">?</div>
+                        <div class="traffic-source-info">
+                            <div class="traffic-source-name">No outbound traffic</div>
+                        </div>
+                    </li>`;
+            } else {
+                outboundEl.innerHTML = outboundEdges.map(edge => {
+                    const targetData = cy.getElementById(edge.data('target')).data();
+                    const icon = targetData.type === 'service' ? 'S' : 'W';
+                    const rate = edge.data('rate') || '0.00';
+                    return `
+                        <li class="traffic-list-item">
+                            <div class="traffic-source-icon" style="background: #06c;">${icon}</div>
+                            <div class="traffic-source-info">
+                                <div class="traffic-source-name">${targetData.id || targetData.label}</div>
+                                <div class="traffic-source-rate">${rate} req/s</div>
+                            </div>
+                        </li>`;
+                }).join('');
+            }
+        }
+
+        function showDefaultSidebar() {
+            document.getElementById('details-default').style.display = 'block';
+            document.getElementById('details-selected').style.display = 'none';
+        }
+
+        // Get graph duration
+        function getGraphDuration() {
+            return document.getElementById('graph-duration')?.value || '5m';
+        }
+
+        // Get graph namespace
+        function getGraphNamespace() {
+            return document.getElementById('graph-namespace')?.value || 'act-test';
+        }
+
+        // Prometheus instant query for graph - via dag_main proxy
+        async function queryPrometheusInstant(query) {
+            try {
+                const url = `/api/prometheus/query?query=${encodeURIComponent(query)}`;
+                const response = await fetch(url);
+                const data = await response.json();
+                return data;
+            } catch (e) {
+                console.error('Prometheus instant query error:', e);
+                return { data: { result: [] } };
+            }
+        }
+
+        // Build service graph from Prometheus/Istio metrics
+        async function refreshGraph() {
+            const ns = getGraphNamespace();
+            const duration = getGraphDuration();
+            
+            try {
+                // Query Istio metrics to get service-to-service connections
+                const query = `sum(rate(istio_requests_total{reporter="source",destination_workload_namespace="${ns}"}[${duration}])) by (source_workload, destination_workload, destination_service, response_code)`;
+                const result = await queryPrometheusInstant(query);
+                
+                const nodes = new Map();
+                const edges = [];
+                
+                // Also get workloads in namespace that might not have traffic
+                const workloadQuery = `count(container_cpu_usage_seconds_total{namespace="${ns}",container!="",container!="POD"}) by (pod)`;
+                const workloadResult = await queryPrometheusInstant(workloadQuery);
+                
+                // Add workloads as nodes
+                if (workloadResult?.data?.result) {
+                    workloadResult.data.result.forEach(item => {
+                        const pod = item.metric.pod || '';
+                        // Extract deployment name from pod name (remove hash suffix)
+                        const parts = pod.split('-');
+                        if (parts.length >= 3) {
+                            parts.pop(); // Remove random string
+                            parts.pop(); // Remove hash
+                        }
+                        const workload = parts.join('-') || pod;
+                        
+                        if (workload && !nodes.has(workload)) {
+                            nodes.set(workload, {
+                                data: {
+                                    id: workload,
+                                    label: workload,
+                                    type: 'workload',
+                                    status: 'healthy',
+                                    namespace: ns
+                                }
+                            });
+                        }
+                    });
+                }
+                
+                // Process Istio traffic data (topology + edges only, status handled separately)
+                if (result?.data?.result) {
+                    result.data.result.forEach(item => {
+                        const source = item.metric.source_workload || 'unknown';
+                        const destWorkload = item.metric.destination_workload || 'unknown';
+                        const destService = item.metric.destination_service?.split('.')[0] || '';
+                        const rate = parseFloat(item.value[1]) || 0;
+                        const responseCode = item.metric.response_code || '200';
+                        const isError = responseCode.startsWith('5');
+                        
+                        // Skip if both are unknown or same
+                        if (source === 'unknown' && destWorkload === 'unknown') return;
+                        if (source === destWorkload) return;
+                        
+                        // Add source node (workload)
+                        if (source !== 'unknown' && !nodes.has(source)) {
+                            nodes.set(source, {
+                                data: {
+                                    id: source,
+                                    label: source,
+                                    type: 'workload',
+                                    status: 'healthy',
+                                    namespace: ns
+                                }
+                            });
+                        }
+                        
+                        // Add service node if exists and different from workload
+                        if (destService && destService !== destWorkload && !nodes.has(destService)) {
+                            nodes.set(destService, {
+                                data: {
+                                    id: destService,
+                                    label: destService,
+                                    type: 'service',
+                                    status: 'healthy',
+                                    namespace: ns
+                                }
+                            });
+                        }
+                        
+                        // Add destination workload node
+                        if (destWorkload !== 'unknown' && !nodes.has(destWorkload)) {
+                            nodes.set(destWorkload, {
+                                data: {
+                                    id: destWorkload,
+                                    label: destWorkload,
+                                    type: 'workload',
+                                    status: 'healthy',
+                                    namespace: ns
+                                }
+                            });
+                        }
+                        
+                        // Create edges: source -> service -> workload (if service exists)
+                        // Or just source -> workload (if no separate service)
+                        if (source !== 'unknown' && destWorkload !== 'unknown') {
+                            if (destService && destService !== destWorkload) {
+                                // Edge: source -> service
+                                const edgeId1 = `${source}->${destService}`;
+                                if (!edges.find(e => e.data.id === edgeId1)) {
+                                    edges.push({
+                                        data: {
+                                            id: edgeId1,
+                                            source: source,
+                                            target: destService,
+                                            label: rate > 0.01 ? rate.toFixed(2) + '/s' : '',
+                                            rate: rate.toFixed(2),
+                                            errorRate: isError ? rate.toFixed(2) : '0',
+                                            mtls: true
+                                        }
+                                    });
+                                }
+                                // Edge: service -> workload
+                                const edgeId2 = `${destService}->${destWorkload}`;
+                                if (!edges.find(e => e.data.id === edgeId2)) {
+                                    edges.push({
+                                        data: {
+                                            id: edgeId2,
+                                            source: destService,
+                                            target: destWorkload,
+                                            label: '',
+                                            rate: rate.toFixed(2),
+                                            errorRate: isError ? rate.toFixed(2) : '0',
+                                            mtls: true,
+                                            type: 'network'
+                                        }
+                                    });
+                                }
+                            } else {
+                                // Direct edge: source -> workload
+                                const edgeId = `${source}->${destWorkload}`;
+                                const existingEdge = edges.find(e => e.data.id === edgeId);
+                                
+                                if (existingEdge) {
+                                    existingEdge.data.rate = (parseFloat(existingEdge.data.rate) + rate).toFixed(2);
+                                    if (isError) existingEdge.data.errorRate = (parseFloat(existingEdge.data.errorRate || 0) + rate).toFixed(2);
+                                } else {
+                                    edges.push({
+                                        data: {
+                                            id: edgeId,
+                                            source: source,
+                                            target: destWorkload,
+                                            label: rate > 0.01 ? rate.toFixed(2) + '/s' : '',
+                                            rate: rate.toFixed(2),
+                                            errorRate: isError ? rate.toFixed(2) : '0',
+                                            mtls: true
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    });
+                }
+                
+                // If no nodes from traffic, try to get services
+                if (nodes.size === 0) {
+                    const svcQuery = `count(kube_service_info{namespace="${ns}"}) by (service)`;
+                    const svcResult = await queryPrometheusInstant(svcQuery);
+                    
+                    if (svcResult?.data?.result) {
+                        svcResult.data.result.forEach(item => {
+                            const svc = item.metric.service;
+                            if (svc && !nodes.has(svc)) {
+                                nodes.set(svc, {
+                                    data: {
+                                        id: svc,
+                                        label: svc,
+                                        type: 'service',
+                                        status: 'idle',
+                                        namespace: ns
+                                    }
+                                });
+                            }
+                        });
+                    }
+                }
+
+                // ── Real-time health status: fixed [1m] instant query, independent of Duration ──
+                const realtimeErrorQuery = `sum(rate(istio_requests_total{reporter="source",destination_workload_namespace="${ns}",response_code=~"5.."}[1m])) by (destination_workload, destination_service)`;
+                const realtimeErrorResult = await queryPrometheusInstant(realtimeErrorQuery);
+                const degradedWorkloads = new Set();
+                const degradedServices = new Set();
+                if (realtimeErrorResult?.data?.result) {
+                    realtimeErrorResult.data.result.forEach(item => {
+                        const errRate = parseFloat(item.value[1]) || 0;
+                        if (errRate > 0) {
+                            const dw = item.metric.destination_workload;
+                            const ds = item.metric.destination_service?.split('.')[0];
+                            if (dw && dw !== 'unknown') degradedWorkloads.add(dw);
+                            if (ds && ds !== 'unknown') degradedServices.add(ds);
+                        }
+                    });
+                }
+                // Apply real-time status to nodes
+                nodes.forEach((node) => {
+                    if (node.data.type === 'service') {
+                        if (degradedServices.has(node.data.id)) node.data.status = 'degraded';
+                    } else {
+                        if (degradedWorkloads.has(node.data.id)) node.data.status = 'degraded';
+                    }
+                });
+                
+                // Convert to array format
+                const elements = [...nodes.values(), ...edges];
+                
+                initGraph(elements);
+                
+            } catch (e) {
+                console.error('Error building graph from Prometheus:', e);
+                // Show empty graph with message
+                initGraph([]);
+            }
+        }
+
+        // --- Istio Observability Metrics Logic ---
+        // API base path for Prometheus queries via dag_main proxy
+        const API_BASE = '';
+        
+        // Get current namespace
+        function getCurrentNamespace() {
+            return document.getElementById('prom-namespace')?.value || 'act-test';
+        }
+
+        // Crosshair plugin for hover line
+        const crosshairPlugin = {
+            id: 'crosshair',
+            afterDraw: (chart) => {
+                if (chart.tooltip._active && chart.tooltip._active.length) {
+                    const ctx = chart.ctx;
+                    const activePoint = chart.tooltip._active[0];
+                    const x = activePoint.element.x;
+                    const y = activePoint.element.y;
+                    const topY = chart.scales.y.top;
+                    const bottomY = chart.scales.y.bottom;
+                    const leftX = chart.scales.x.left;
+                    const rightX = chart.scales.x.right;
+
+                    ctx.save();
+                    // Vertical line
+                    ctx.beginPath();
+                    ctx.moveTo(x, topY);
+                    ctx.lineTo(x, bottomY);
+                    ctx.lineWidth = 1;
+                    ctx.strokeStyle = 'rgba(0, 102, 204, 0.5)';
+                    ctx.setLineDash([4, 4]);
+                    ctx.stroke();
+
+                    // Horizontal line
+                    ctx.beginPath();
+                    ctx.moveTo(leftX, y);
+                    ctx.lineTo(rightX, y);
+                    ctx.lineWidth = 1;
+                    ctx.strokeStyle = 'rgba(0, 102, 204, 0.5)';
+                    ctx.setLineDash([4, 4]);
+                    ctx.stroke();
+                    ctx.restore();
+                }
+            }
+        };
+
+        // Register plugin
+        Chart.register(crosshairPlugin);
+        
+        // Chart configurations - Light theme with thin lines
+        const chartConfig = {
+            type: 'line',
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    mode: 'nearest',
+                    intersect: false,
+                    axis: 'xy'
+                },
+                plugins: {
+                    legend: {
+                        display: false  // Use custom HTML legend instead
+                    },
+                    tooltip: {
+                        enabled: true,
+                        mode: 'nearest',
+                        intersect: false,
+                        axis: 'xy',
+                        backgroundColor: 'rgba(255,255,255,0.95)',
+                        titleColor: '#333',
+                        bodyColor: '#666',
+                        borderColor: '#ddd',
+                        borderWidth: 1,
+                        padding: 10,
+                        displayColors: true,
+                        callbacks: {
+                            title: function(items) {
+                                // Show timestamp in Asia/Shanghai timezone
+                                if (!items.length) return '';
+                                return items[0].label;
+                            },
+                            label: function(context) {
+                                let label = context.dataset.label || '';
+                                if (label) label += ': ';
+                                if (context.parsed.y !== null) {
+                                    label += context.parsed.y.toFixed(3);
+                                }
+                                return label;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: { color: '#f0f0f0', drawBorder: false },
+                        ticks: { color: '#666', maxTicksLimit: 8, font: { size: 10 } }
+                    },
+                    y: {
+                        grid: { color: '#f0f0f0', drawBorder: false },
+                        ticks: { color: '#666', font: { size: 10 } },
+                        beginAtZero: true
+                    }
+                },
+                elements: {
+                    line: {
+                        borderWidth: 1.5,  // Thin lines
+                        tension: 0.3
+                    },
+                    point: {
+                        radius: 0,
+                        hoverRadius: 5,
+                        hitRadius: 20
+                    }
+                },
+                hover: {
+                    mode: 'nearest',
+                    intersect: false,
+                    axis: 'xy'
+                }
+            }
+        };
+
+        // Initialize charts
+        let qpsChart, latencyChart, errorRateChart, gpuMemoryChart;
+        let memoryUsageChart, memoryAllocChart, cpuUsageChart, goroutinesChart, validationChart, injectionChart;
+        let predictCpuChart, predictGpuChart, predictQpsChart, predictPodChart;
+
+        // Color palette for multi-deployment charts
+        const deploymentColors = [
+            'rgb(50, 116, 217)',   // Blue
+            'rgb(255, 152, 48)',   // Orange
+            'rgb(62, 134, 53)',    // Green
+            'rgb(201, 25, 11)',    // Red
+            'rgb(138, 75, 175)',   // Purple
+            'rgb(0, 168, 168)',    // Teal
+            'rgb(255, 99, 132)',   // Pink
+            'rgb(75, 192, 192)',   // Cyan
+            'rgb(255, 205, 86)',   // Yellow
+            'rgb(153, 102, 255)',  // Violet
+        ];
+
+        function getColor(index) {
+            return deploymentColors[index % deploymentColors.length];
+        }
+
+        // Generate custom HTML legend for a chart
+        function generateLegend(chart, canvasId) {
+            const legendContainer = document.getElementById(`${canvasId}-legend`);
+            if (!legendContainer) return;
+
+            const datasets = chart.data.datasets;
+            if (!datasets || datasets.length === 0) {
+                legendContainer.innerHTML = '<div style="color: #999; font-size: 11px; padding: 5px;">No data</div>';
+                return;
+            }
+
+            const legendHtml = `
+                <ul class="legend-list">
+                    ${datasets.map((ds, idx) => `
+                        <li class="legend-item ${ds.hidden ? 'hidden' : ''}" data-index="${idx}">
+                            <span class="legend-color" style="background-color: ${ds.borderColor}"></span>
+                            <span class="legend-label" title="${ds.label}">${ds.label}</span>
+                        </li>
+                    `).join('')}
+                </ul>
+            `;
+            legendContainer.innerHTML = legendHtml;
+
+            // Add click handlers
+            legendContainer.querySelectorAll('.legend-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    const index = parseInt(item.dataset.index);
+                    const meta = chart.getDatasetMeta(index);
+                    meta.hidden = !meta.hidden;
+                    item.classList.toggle('hidden');
+                    chart.update();
+                });
+            });
+        }
+
+        function createChart(canvasId, label, color) {
+            const chart = new Chart(document.getElementById(canvasId).getContext('2d'), {
+                ...chartConfig,
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: label,
+                        data: [],
+                        borderColor: color,
+                        backgroundColor: color.replace(')', ', 0.1)').replace('rgb', 'rgba'),
+                        fill: true,
+                        borderWidth: 1.5
+                    }]
+                }
+            });
+            // Generate initial legend
+            generateLegend(chart, canvasId);
+            return chart;
+        }
+
+        function createMultiChart(canvasId, datasets) {
+            const chart = new Chart(document.getElementById(canvasId).getContext('2d'), {
+                ...chartConfig,
+                data: {
+                    labels: [],
+                    datasets: datasets.map(ds => ({
+                        label: ds.label,
+                        data: [],
+                        borderColor: ds.color,
+                        backgroundColor: ds.color.replace(')', ', 0.08)').replace('rgb', 'rgba'),
+                        fill: true,
+                        borderWidth: 1.5
+                    }))
+                }
+            });
+            // Generate initial legend
+            generateLegend(chart, canvasId);
+            return chart;
+        }
+
+        // Create chart for dynamic deployment data
+        function createDynamicChart(canvasId) {
+            return new Chart(document.getElementById(canvasId).getContext('2d'), {
+                ...chartConfig,
+                data: {
+                    labels: [],
+                    datasets: []
+                }
+            });
+        }
+
+        // Update chart with multiple deployment series
+        function updateDynamicChart(chart, results, labelKey = 'pod') {
+            const canvasId = chart.canvas.id;
+            
+            if (!results || results.length === 0) {
+                chart.data.labels = [];
+                chart.data.datasets = [];
+                chart.update('none');
+                generateLegend(chart, canvasId);
+                return;
+            }
+
+            // Get timestamps from first result
+            const timestamps = results[0].values.map(v => {
+                const date = new Date(v[0] * 1000);
+                return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Shanghai' });
+            });
+
+            chart.data.labels = timestamps;
+            
+            // Create dataset for each deployment/pod
+            chart.data.datasets = results.map((result, idx) => {
+                const label = result.metric[labelKey] || result.metric.deployment || result.metric.destination_service || `Series ${idx + 1}`;
+                const color = getColor(idx);
+                return {
+                    label: label,
+                    data: result.values.map(v => parseFloat(v[1]) || 0),
+                    borderColor: color,
+                    backgroundColor: color.replace(')', ', 0.08)').replace('rgb', 'rgba'),
+                    fill: false,
+                    borderWidth: 1.5
+                };
+            });
+
+            chart.update('none');
+            generateLegend(chart, canvasId);
+        }
+
+        // Update chart with single/multi series and regenerate legend
+        function updateChartWithLegend(chart, results) {
+            const canvasId = chart.canvas.id;
+            
+            if (!results || results.length === 0) {
+                generateLegend(chart, canvasId);
+                return;
+            }
+            
+            const timestamps = results[0].values.map(v => {
+                const date = new Date(v[0] * 1000);
+                return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Shanghai' });
+            });
+            
+            chart.data.labels = timestamps;
+            
+            results.forEach((result, idx) => {
+                if (chart.data.datasets[idx]) {
+                    chart.data.datasets[idx].data = result.values.map(v => parseFloat(v[1]));
+                }
+            });
+            
+            chart.update('none');
+            generateLegend(chart, canvasId);
+        }
+
+        function initIstioCharts() {
+            // For Predict charts - will be dynamically updated with deployment data
+            predictCpuChart = createDynamicChart('predictCpuChart');
+            predictGpuChart = createDynamicChart('predictGpuChart');
+            predictQpsChart = createDynamicChart('predictQpsChart');
+            predictPodChart = createDynamicChart('predictPodChart');
+
+            // Request Data charts
+            qpsChart = createChart('qpsChart', 'QPS', 'rgb(50, 116, 217)');
+            latencyChart = createChart('latencyChart', 'P95 Latency (ms)', 'rgb(255, 152, 48)');
+            errorRateChart = createChart('errorRateChart', 'Error Rate', 'rgb(201, 25, 11)');
+            gpuMemoryChart = createDynamicChart('gpuMemoryChart');
+
+            // Resource Usage charts
+            memoryUsageChart = createChart('memoryUsageChart', 'Memory Usage', 'rgb(87, 148, 242)');
+            
+            memoryAllocChart = createMultiChart('memoryAllocChart', [
+                { label: 'Heap Alloc', color: 'rgb(255, 152, 48)' },
+                { label: 'Stack Inuse', color: 'rgb(184, 119, 217)' }
+            ]);
+
+            cpuUsageChart = createChart('cpuUsageChart', 'CPU Usage', 'rgb(242, 73, 92)');
+            goroutinesChart = createChart('goroutinesChart', 'Goroutines', 'rgb(62, 134, 53)');
+
+            // Webhooks charts
+            validationChart = createMultiChart('validationChart', [
+                { label: 'Success', color: 'rgb(62, 134, 53)' },
+                { label: 'Failure', color: 'rgb(242, 73, 92)' }
+            ]);
+
+            injectionChart = createMultiChart('injectionChart', [
+                { label: 'Success', color: 'rgb(62, 134, 53)' },
+                { label: 'Failure', color: 'rgb(242, 73, 92)' }
+            ]);
+        }
+
+        // Query Prometheus
+        // Query Prometheus via dag_main proxy
+        async function queryPrometheus(query, timeRange) {
+            const range = timeRange || document.getElementById('time-range').value;
+            let duration = 1800; // 30m default
+            if (range === '5m') duration = 300;
+            else if (range === '15m') duration = 900;
+            else if (range === '1h') duration = 3600;
+            else if (range === '3h') duration = 10800;
+            
+            const step = Math.max(15, Math.floor(duration / 60));
+            // Snap end to a multiple of step so the query grid stays stable across refreshes
+            const end = Math.floor(Math.floor(Date.now() / 1000) / step) * step;
+            const start = end - duration;
+
+            try {
+                const url = `${API_BASE}/api/prometheus/query_range?query=${encodeURIComponent(query)}&start=${start}&end=${end}&step=${step}`;
+                const response = await fetch(url);
+                const data = await response.json();
+                return data.data?.result || [];
+            } catch (e) {
+                console.error('Prometheus query error:', e);
+                return [];
+            }
+        }
+
+        // Format bytes to human readable
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        // Update chart with data
+        function updateChart(chart, results, labelKey = 0) {
+            const canvasId = chart.canvas.id;
+            
+            if (!results || results.length === 0) {
+                generateLegend(chart, canvasId);
+                return;
+            }
+            
+            const timestamps = results[0].values.map(v => {
+                const date = new Date(v[0] * 1000);
+                return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Shanghai' });
+            });
+            
+            chart.data.labels = timestamps;
+            
+            results.forEach((result, idx) => {
+                if (chart.data.datasets[idx]) {
+                    chart.data.datasets[idx].data = result.values.map(v => parseFloat(v[1]));
+                }
+            });
+            
+            chart.update('none');
+            generateLegend(chart, canvasId);
+        }
+
+        // Fetch deployed versions
+        async function fetchVersions() {
+            // No longer needed - removed version table
+        }
+
+        // Fetch all namespaces from cluster via dag_main proxy
+        async function fetchNamespaces() {
+            try {
+                // Query Prometheus for any metric that has namespace label
+                const response = await fetch(`${API_BASE}/api/prometheus/label/namespace/values`);
+                const data = await response.json();
+                const namespaces = data.data || [];
+                
+                // Update both namespace selectors
+                const selectors = [
+                    document.getElementById('prom-namespace'),
+                    document.getElementById('graph-namespace')
+                ];
+                
+                selectors.forEach(select => {
+                    if (!select) return;
+                    const currentValue = select.value;
+                    
+                    select.innerHTML = namespaces
+                        .filter(ns => ns && !ns.startsWith('kube-'))  // Filter out kube-system etc.
+                        .sort()
+                        .map(ns => `<option value="${ns}" ${ns === currentValue ? 'selected' : ''}>${ns}</option>`)
+                        .join('');
+                    
+                    // Ensure act-test is selected if available
+                    if (namespaces.includes('act-test') && !currentValue) {
+                        select.value = 'act-test';
+                    }
+                });
+            } catch (e) {
+                console.error('Error fetching namespaces:', e);
+            }
+        }
+
+        // Main fetch function
+        async function fetchIstioMetrics() {
+            const ns = getCurrentNamespace();
+
+            // === For Predict Section (by Deployment) ===
+            // CPU Usage by deployment
+            const predictCpuData = await queryPrometheus(
+                `sum(rate(container_cpu_usage_seconds_total{container!="", namespace="${ns}"}[1m])) by (pod)`
+            );
+            updateDynamicChart(predictCpuChart, predictCpuData, 'pod');
+
+            // GPU Utilization by deployment (DCGM)
+            const predictGpuData = await queryPrometheus(
+                `DCGM_FI_DEV_GPU_UTIL{namespace="${ns}"}`
+            );
+            updateDynamicChart(predictGpuChart, predictGpuData, 'pod');
+
+            // QPS by deployment (destination_service)
+            const predictQpsData = await queryPrometheus(
+                `sum(rate(istio_requests_total{destination_service_namespace="${ns}"}[1m])) by (destination_service)`
+            );
+            updateDynamicChart(predictQpsChart, predictQpsData, 'destination_service');
+
+            // Pod count by deployment - count unique pods, not containers
+            // Use kube_deployment_status_replicas_available for accurate replica count
+            const predictPodData = await queryPrometheus(
+                `kube_deployment_status_replicas_available{namespace="${ns}"}`
+            );
+            updateDynamicChart(predictPodChart, predictPodData, 'deployment');
+
+            // === Request Data Section ===
+            // QPS - sum(rate(istio_requests_total{destination_service_namespace="ns"}[1m])) by (destination_service)
+            const qpsData = await queryPrometheus(`sum(rate(istio_requests_total{destination_service_namespace="${ns}"}[1m]))`);
+            updateChart(qpsChart, [qpsData[0] || { values: [] }]);
+
+            // Request Latency - P95
+            const latencyData = await queryPrometheus(`histogram_quantile(0.95, sum(rate(istio_request_duration_milliseconds_bucket{destination_service_namespace="${ns}"}[1m])) by (le))`);
+            updateChart(latencyChart, [latencyData[0] || { values: [] }]);
+
+            // HTTP 5xx Error Rate
+            const errorData = await queryPrometheus(`sum(rate(istio_requests_total{destination_service_namespace="${ns}",response_code=~"5.."}[1m])) / sum(rate(istio_requests_total{destination_service_namespace="${ns}"}[1m]))`);
+            updateChart(errorRateChart, [errorData[0] || { values: [] }]);
+
+            // GPU Memory Usage (DCGM framebuffer used, MiB)
+            const gpuData = await queryPrometheus(`DCGM_FI_DEV_FB_USED{namespace="${ns}"}`);
+            updateDynamicChart(gpuMemoryChart, gpuData, 'pod');
+
+            // === Resource Usage Section ===
+            // Memory Usage - container_memory_usage_bytes
+            const memUsage = await queryPrometheus(`sum(container_memory_usage_bytes{container!="", namespace="${ns}"}) by (pod)`);
+            updateChart(memoryUsageChart, [memUsage[0] || { values: [] }]);
+
+            // Memory Allocations - go_memstats for istiod
+            const heapAlloc = await queryPrometheus('go_memstats_heap_alloc_bytes{app="istiod"}');
+            const stackInuse = await queryPrometheus('go_memstats_stack_inuse_bytes{app="istiod"}');
+            updateChart(memoryAllocChart, [
+                heapAlloc[0] || { values: [] },
+                stackInuse[0] || { values: [] }
+            ]);
+
+            // CPU Usage - container_cpu_usage_seconds_total
+            const cpuUsage = await queryPrometheus(`sum(rate(container_cpu_usage_seconds_total{container!="", namespace="${ns}"}[1m]))`);
+            updateChart(cpuUsageChart, [cpuUsage[0] || { values: [] }]);
+
+            // Goroutines - go_goroutines
+            const goroutines = await queryPrometheus('go_goroutines{app="istiod"}');
+            updateChart(goroutinesChart, [goroutines[0] || { values: [] }]);
+
+            // === Webhooks Section ===
+            // Validation webhook
+            const validationSuccess = await queryPrometheus('sum(rate(galley_validation_passed{app="istiod"}[1m]))');
+            const validationFailed = await queryPrometheus('sum(rate(galley_validation_failed{app="istiod"}[1m]))');
+            updateChart(validationChart, [
+                validationSuccess[0] || { values: [] },
+                validationFailed[0] || { values: [] }
+            ]);
+
+            // Injection webhook
+            const injectionSuccess = await queryPrometheus('sum(rate(sidecar_injection_success_total{app="istiod"}[1m]))');
+            const injectionFailed = await queryPrometheus('sum(rate(sidecar_injection_failure_total{app="istiod"}[1m]))');
+            updateChart(injectionChart, [
+                injectionSuccess[0] || { values: [] },
+                injectionFailed[0] || { values: [] }
+            ]);
+        }
+
+        // --- Logical Topology Logic ---
+        let cyTopology;
+        let topologyData = null;
+
+        async function fetchLogicalTopology() {
+            try {
+                const response = await fetch('/api/logical-topology');
+                const data = await response.json();
+                topologyData = data;
+                initTopologyGraph(data);
+            } catch (e) {
+                console.error('Error fetching logical topology:', e);
+                // Use mock data if API fails (for local testing)
+                const mockData = getMockTopologyData();
+                topologyData = mockData;
+                initTopologyGraph(mockData);
+            }
+        }
+
+        function getMockTopologyData() {
+            return {
+                nodes: [
+                    {data: {id: "user-input", label: "User Input", type: "entry", description: "User uploads documents"}},
+                    {data: {id: "fileservice", label: "File Service", type: "service", description: "Stores and manages files"}},
+                    {data: {id: "parser", label: "Parser", type: "processor", description: "Parses documents into chunks"}},
+                    {data: {id: "embedding-ingest", label: "Embedding", type: "processor", description: "Converts text to vectors"}},
+                    {data: {id: "vectordb", label: "Vector DB (Milvus)", type: "storage", description: "Stores document embeddings"}},
+                    {data: {id: "user-query", label: "User Query", type: "entry", description: "User asks a question"}},
+                    {data: {id: "retriever", label: "Retriever", type: "processor", description: "Searches relevant documents"}},
+                    {data: {id: "embedding-query", label: "Query Embedding", type: "processor", description: "Embeds user query"}},
+                    {data: {id: "reranker", label: "Reranker", type: "processor", description: "Reranks retrieved results"}},
+                    {data: {id: "llm", label: "LLM", type: "processor", description: "Generates response"}},
+                    {data: {id: "response", label: "Response", type: "output", description: "Final answer to user"}}
+                ],
+                edges: [
+                    {data: {id: "e1", source: "user-input", target: "fileservice", label: "upload", pipeline: "ingestion"}},
+                    {data: {id: "e2", source: "fileservice", target: "parser", label: "fetch", pipeline: "ingestion"}},
+                    {data: {id: "e3", source: "parser", target: "embedding-ingest", label: "chunks", pipeline: "ingestion"}},
+                    {data: {id: "e4", source: "embedding-ingest", target: "vectordb", label: "store", pipeline: "ingestion"}},
+                    {data: {id: "e5", source: "user-query", target: "retriever", label: "query", pipeline: "query"}},
+                    {data: {id: "e6", source: "retriever", target: "embedding-query", label: "embed", pipeline: "query"}},
+                    {data: {id: "e7", source: "embedding-query", target: "vectordb", label: "search", pipeline: "query"}},
+                    {data: {id: "e8", source: "vectordb", target: "retriever", label: "results", pipeline: "query"}},
+                    {data: {id: "e9", source: "retriever", target: "reranker", label: "candidates", pipeline: "query"}},
+                    {data: {id: "e10", source: "reranker", target: "llm", label: "top-k", pipeline: "query"}},
+                    {data: {id: "e11", source: "llm", target: "response", label: "generate", pipeline: "query"}}
+                ],
+                pipelines: [
+                    {id: "ingestion", name: "Document Ingestion", color: "#3e8635"},
+                    {id: "query", name: "Query & Retrieval", color: "#06c"}
+                ]
+            };
+        }
+
+        function getNodeStyle(type) {
+            const styles = {
+                'entry': { bg: '#e8f5e9', border: '#4caf50', shape: 'ellipse' },
+                'service': { bg: '#e3f2fd', border: '#2196f3', shape: 'round-rectangle' },
+                'processor': { bg: '#fff3e0', border: '#ff9800', shape: 'round-rectangle' },
+                'storage': { bg: '#f3e5f5', border: '#9c27b0', shape: 'barrel' },
+                'output': { bg: '#e0f7fa', border: '#00bcd4', shape: 'ellipse' }
+            };
+            return styles[type] || styles['processor'];
+        }
+
+        function initTopologyGraph(data) {
+            // Update counts
+            document.getElementById('topology-node-count').textContent = data.nodes.length;
+            document.getElementById('topology-edge-count').textContent = data.edges.length;
+
+            const elements = [...data.nodes, ...data.edges];
+
+            if (cyTopology) {
+                cyTopology.json({ elements: elements });
+                runTopologyLayout();
+                return;
+            }
+
+            cyTopology = cytoscape({
+                container: document.getElementById('cy-topology'),
+                elements: elements,
+                style: [
+                    // Base node style
+                    {
+                        selector: 'node',
+                        style: {
+                            'background-color': '#fff3e0',
+                            'border-width': 2,
+                            'border-color': '#ff9800',
+                            'label': 'data(label)',
+                            'width': '36px',
+                            'height': '36px',
+                            'shape': 'round-rectangle',
+                            'text-valign': 'bottom',
+                            'text-halign': 'center',
+                            'text-margin-y': '6px',
+                            'font-size': '11px',
+                            'font-weight': 500,
+                            'color': '#151515',
+                            'text-background-color': '#fff',
+                            'text-background-opacity': 1,
+                            'text-background-padding': '3px',
+                            'text-background-shape': 'roundrectangle'
+                        }
+                    },
+                    // Entry nodes (circles)
+                    {
+                        selector: 'node[type="entry"]',
+                        style: {
+                            'background-color': '#e8f5e9',
+                            'border-color': '#4caf50',
+                            'shape': 'ellipse'
+                        }
+                    },
+                    // Service nodes
+                    {
+                        selector: 'node[type="service"]',
+                        style: {
+                            'background-color': '#e3f2fd',
+                            'border-color': '#2196f3',
+                            'shape': 'round-rectangle'
+                        }
+                    },
+                    // Processor nodes
+                    {
+                        selector: 'node[type="processor"]',
+                        style: {
+                            'background-color': '#fff3e0',
+                            'border-color': '#ff9800',
+                            'shape': 'round-rectangle'
+                        }
+                    },
+                    // Storage nodes
+                    {
+                        selector: 'node[type="storage"]',
+                        style: {
+                            'background-color': '#f3e5f5',
+                            'border-color': '#9c27b0',
+                            'shape': 'barrel',
+                            'width': '40px',
+                            'height': '40px'
+                        }
+                    },
+                    // Output nodes
+                    {
+                        selector: 'node[type="output"]',
+                        style: {
+                            'background-color': '#e0f7fa',
+                            'border-color': '#00bcd4',
+                            'shape': 'ellipse'
+                        }
+                    },
+                    // Selected node
+                    {
+                        selector: 'node:selected',
+                        style: {
+                            'border-width': 4,
+                            'border-color': '#151515',
+                            'overlay-color': '#151515',
+                            'overlay-opacity': 0.1
+                        }
+                    },
+                    // Base edge style
+                    {
+                        selector: 'edge',
+                        style: {
+                            'width': 2,
+                            'line-color': '#999',
+                            'target-arrow-color': '#999',
+                            'target-arrow-shape': 'triangle',
+                            'curve-style': 'bezier',
+                            'arrow-scale': 0.8,
+                            'label': 'data(label)',
+                            'font-size': '9px',
+                            'text-rotation': 'autorotate',
+                            'text-background-opacity': 1,
+                            'text-background-color': '#fff',
+                            'text-background-padding': '2px',
+                            'color': '#6a6e73'
+                        }
+                    },
+                    // Ingestion pipeline edges
+                    {
+                        selector: 'edge[pipeline="ingestion"]',
+                        style: {
+                            'line-color': '#3e8635',
+                            'target-arrow-color': '#3e8635'
+                        }
+                    },
+                    // Query pipeline edges
+                    {
+                        selector: 'edge[pipeline="query"]',
+                        style: {
+                            'line-color': '#06c',
+                            'target-arrow-color': '#06c'
+                        }
+                    }
+                ],
+                layout: {
+                    name: 'dagre',
+                    rankDir: 'LR',
+                    nodeSep: 60,
+                    rankSep: 100,
+                    padding: 80,
+                    nodeDimensionsIncludeLabels: true
+                },
+                wheelSensitivity: 0.3,
+                minZoom: 0.2,
+                maxZoom: 3,
+                zoom: 1.4
+            });
+
+            // Tap event for sidebar details
+            cyTopology.on('tap', 'node', function(evt){
+                const node = evt.target;
+                showTopologyNodeDetails(node.data());
+            });
+
+            cyTopology.on('tap', function(evt){
+                if(evt.target === cyTopology){
+                    showTopologyDefaultSidebar();
+                }
+            });
+        }
+
+        function runTopologyLayout() {
+            if (!cyTopology) return;
+            const layout = document.getElementById('topology-layout')?.value || 'dagre';
+            const layoutOptions = {
+                name: layout,
+                padding: 80,
+                animate: true,
+                animationDuration: 500,
+                nodeDimensionsIncludeLabels: true
+            };
+            if (layout === 'dagre') {
+                layoutOptions.rankDir = 'LR';
+                layoutOptions.nodeSep = 60;
+                layoutOptions.rankSep = 100;
+            }
+            cyTopology.layout(layoutOptions).run();
+            cyTopology.zoom(1.4);
+            cyTopology.center();
+        }
+
+        function changeTopologyLayout() {
+            runTopologyLayout();
+        }
+
+        function fitTopologyGraph() {
+            if (cyTopology) {
+                cyTopology.fit(50);
+            }
+        }
+
+        function filterTopologyPipeline() {
+            if (!cyTopology || !topologyData) return;
+            const pipeline = document.getElementById('topology-pipeline').value;
+            
+            if (pipeline === 'all') {
+                // Show all nodes and edges
+                cyTopology.elements().show();
+            } else {
+                // First hide all
+                cyTopology.elements().hide();
+                
+                // Show edges of selected pipeline
+                cyTopology.edges(`[pipeline="${pipeline}"]`).show();
+                
+                // Show nodes connected by these edges
+                const visibleEdges = cyTopology.edges(`[pipeline="${pipeline}"]`);
+                visibleEdges.connectedNodes().show();
+            }
+        }
+
+        function showTopologyNodeDetails(data) {
+            document.getElementById('topology-details-default').style.display = 'none';
+            document.getElementById('topology-details-selected').style.display = 'block';
+            
+            // Set header
+            const typeColors = {
+                'entry': '#4caf50',
+                'service': '#2196f3',
+                'processor': '#ff9800',
+                'storage': '#9c27b0',
+                'output': '#00bcd4'
+            };
+            
+            const icon = data.type?.charAt(0).toUpperCase() || 'N';
+            document.getElementById('topology-selected-icon').textContent = icon;
+            document.getElementById('topology-selected-icon').style.background = typeColors[data.type] || '#06c';
+            document.getElementById('topology-selected-title').textContent = data.label || data.id;
+            
+            // Info
+            document.getElementById('topology-sel-type').textContent = (data.type || 'unknown').charAt(0).toUpperCase() + (data.type || 'unknown').slice(1);
+            document.getElementById('topology-sel-description').textContent = data.description || '-';
+            
+            // Connections
+            if (cyTopology) {
+                const nodeId = data.id;
+                const inbound = cyTopology.edges(`[target="${nodeId}"]`).length;
+                const outbound = cyTopology.edges(`[source="${nodeId}"]`).length;
+                document.getElementById('topology-sel-inbound').textContent = inbound;
+                document.getElementById('topology-sel-outbound').textContent = outbound;
+            }
+        }
+
+        function showTopologyDefaultSidebar() {
+            document.getElementById('topology-details-default').style.display = 'block';
+            document.getElementById('topology-details-selected').style.display = 'none';
+        }
+
+        // --- Auto Refresh Logic ---
+        let graphAutoRefreshTimer = null;
+        let metricsAutoRefreshTimer = null;
+
+        function setGraphAutoRefresh() {
+            const interval = parseInt(document.getElementById('graph-auto-refresh').value);
+            const indicator = document.getElementById('graph-refresh-indicator');
+            
+            // Clear existing timer
+            if (graphAutoRefreshTimer) {
+                clearInterval(graphAutoRefreshTimer);
+                graphAutoRefreshTimer = null;
+            }
+            
+            if (interval > 0) {
+                indicator.textContent = 'Auto';
+                indicator.classList.add('active');
+                graphAutoRefreshTimer = setInterval(() => {
+                    refreshGraph();
+                }, interval * 1000);
+            } else {
+                indicator.textContent = '';
+                indicator.classList.remove('active');
+            }
+        }
+
+        function setMetricsAutoRefresh() {
+            const interval = parseInt(document.getElementById('metrics-auto-refresh').value);
+            const indicator = document.getElementById('metrics-refresh-indicator');
+            
+            // Clear existing timer
+            if (metricsAutoRefreshTimer) {
+                clearInterval(metricsAutoRefreshTimer);
+                metricsAutoRefreshTimer = null;
+            }
+            
+            if (interval > 0) {
+                indicator.textContent = 'Auto';
+                indicator.classList.add('active');
+                metricsAutoRefreshTimer = setInterval(() => {
+                    fetchIstioMetrics();
+                }, interval * 1000);
+            } else {
+                indicator.textContent = '';
+                indicator.classList.remove('active');
+            }
+        }
+
+        // --- Init ---
+        document.addEventListener('DOMContentLoaded', () => {
+            // Load Logical Topology first (default view)
+            fetchLogicalTopology();
+            initIstioCharts();
+            
+            // Load namespaces from cluster
+            fetchNamespaces();
+            
+            // Add namespace change listener
+            document.getElementById('prom-namespace')?.addEventListener('change', fetchIstioMetrics);
+        });
+
+        // --- Evolution Strategy Logs Logic ---
+        let allEvolutionLogs = [];
+        let logsAutoRefreshTimer = null;
+
+        async function fetchEvolutionLogs() {
+            const namespace = document.getElementById('logs-namespace')?.value || 'act-test';
+            const strategy = document.getElementById('logs-strategy-filter')?.value || '';
+            const tailLines = document.getElementById('logs-tail-lines')?.value || '1000';
+
+            const container = document.getElementById('logs-container');
+            container.innerHTML = '<div class="logs-placeholder"><p>Loading logs...</p></div>';
+
+            try {
+                const params = new URLSearchParams({namespace, tail_lines: tailLines});
+                if (strategy) params.append('strategy', strategy);
+
+                const resp = await fetch(`/api/logs/evolution?${params}`);
+                const data = await resp.json();
+
+                if (data.status !== 'success') {
+                    container.innerHTML = `<div class="logs-placeholder"><p style="color:#c9190b;">Error: ${data.error || 'Unknown error'}</p></div>`;
+                    return;
+                }
+
+                allEvolutionLogs = data.logs || [];
+                updateLogsSummary(allEvolutionLogs);
+                renderLogs(allEvolutionLogs);
+            } catch (e) {
+                container.innerHTML = `<div class="logs-placeholder"><p style="color:#c9190b;">Failed to fetch logs: ${e.message}</p></div>`;
+            }
+        }
+
+        function updateLogsSummary(logs) {
+            document.getElementById('logs-total-count').textContent = logs.length;
+            document.getElementById('logs-s1-count').textContent = logs.filter(l => l.strategy === '1').length;
+            document.getElementById('logs-s2-count').textContent = logs.filter(l => l.strategy === '2').length;
+            document.getElementById('logs-s3-count').textContent = logs.filter(l => l.strategy === '3').length;
+        }
+
+        function renderLogs(logs) {
+            const container = document.getElementById('logs-container');
+            if (!logs.length) {
+                container.innerHTML = '<div class="logs-placeholder"><p>No Evolution Strategy logs found.</p></div>';
+                return;
+            }
+
+            const searchText = (document.getElementById('logs-search')?.value || '').toLowerCase();
+            const filtered = searchText ? logs.filter(l => l.message.toLowerCase().includes(searchText) || l.pod.toLowerCase().includes(searchText)) : logs;
+
+            let html = '<div class="logs-table-wrapper"><table class="logs-table"><thead><tr>';
+            html += '<th class="logs-col-time">Timestamp</th>';
+            html += '<th class="logs-col-pod">Pod</th>';
+            html += '<th class="logs-col-strategy">Strategy</th>';
+            html += '<th class="logs-col-message">Message</th>';
+            html += '</tr></thead><tbody>';
+
+            const strategyNames = {
+                '1': 'Strategy 1 - 微服务副本调整',
+                '2': 'Strategy 2 - 服务拓扑调整',
+                '3': 'Strategy 3 - 数据流优化'
+            };
+
+            for (const log of filtered) {
+                const strategyClass = log.strategy ? `logs-strategy-${log.strategy}` : '';
+                const strategyLabel = log.strategy ? (strategyNames[log.strategy] || `Strategy ${log.strategy}`) : '-';
+                html += `<tr class="logs-row ${strategyClass}">`;
+                html += `<td class="logs-cell-time">${escapeHtml(log.timestamp || '-')}</td>`;
+                html += `<td class="logs-cell-pod" title="${escapeHtml(log.pod)}">${escapeHtml(truncatePodName(log.pod))}</td>`;
+                html += `<td class="logs-cell-strategy"><span class="logs-strategy-badge ${strategyClass}">${strategyLabel}</span></td>`;
+                html += `<td class="logs-cell-message">${highlightEvolution(escapeHtml(log.description || log.message)).replace(/ \| /g, '<br>')}</td>`;
+                html += '</tr>';
+            }
+
+            html += '</tbody></table></div>';
+            container.innerHTML = html;
+
+            // Auto-scroll to bottom to show newest logs
+            requestAnimationFrame(() => {
+                container.scrollTop = container.scrollHeight;
+            });
+        }
+
+        function filterDisplayedLogs() {
+            renderLogs(allEvolutionLogs);
+        }
+
+        function truncatePodName(name) {
+            if (!name) return '-';
+            // Show last meaningful part: deployment-hash-hash -> show all if short, else truncate
+            if (name.length > 40) return '...' + name.slice(-35);
+            return name;
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+
+        function highlightEvolution(text) {
+            return text.replace(/(Evolution Strategy - \d+)/g, '<strong>$1</strong>');
+        }
+
+        function setLogsAutoRefresh() {
+            const interval = parseInt(document.getElementById('logs-auto-refresh').value);
+            const indicator = document.getElementById('logs-refresh-indicator');
+
+            if (logsAutoRefreshTimer) {
+                clearInterval(logsAutoRefreshTimer);
+                logsAutoRefreshTimer = null;
+            }
+
+            if (interval > 0) {
+                indicator.textContent = 'Auto';
+                indicator.classList.add('active');
+                logsAutoRefreshTimer = setInterval(() => {
+                    fetchEvolutionLogs();
+                }, interval * 1000);
+            } else {
+                indicator.textContent = '';
+                indicator.classList.remove('active');
+            }
+        }
+
+    </script>
+</body>
+</html>

@@ -14,12 +14,15 @@ spec:
     metadata:
       labels:
         app: retriever-service
+      annotations:
+        traffic.sidecar.istio.io/excludeOutboundPorts: "19530,9091"
     spec:
       containers:
       - name: retriever-container
         # IMPORTANT: Make sure to build and push this image to your registry
-        # image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/rag-retriever-service:1020v6
-        image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/rag-retriever-service:1021v16
+        # image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/rag-retriever-service:0304v3
+        image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/rag-retriever-service:0304v4
+        imagePullPolicy: Always
         ports:
         - containerPort: 8000
         resources:
