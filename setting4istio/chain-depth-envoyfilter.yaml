@@ -1,0 +1,59 @@
+# ============================================================
+# EnvoyFilter: 链路调用深度追踪与短路保护
+# 在所有 sidecar 注入 Lua 脚本:
+#   - 每经过一个 sidecar, x-call-depth header +1
+#   - 当深度超过阈值时返回 HTTP 508 (Loop Detected)
+#   - 响应中附加 x-chain-depth-trace header 方便排查
+# ============================================================
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: chain-depth-guard
+  namespace: act-test
+  labels:
+    rag-evolution/managed-by: dag-strategy-2
+spec:
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: envoy.filters.network.http_connection_manager
+            subFilter:
+              name: envoy.filters.http.router
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.lua.chain_depth_guard
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+          inlineCode: |
+            -- 链路调用深度追踪 Lua 脚本
+            -- 每经过一个 sidecar, x-call-depth +1
+            -- 超过 MAX_DEPTH 时返回 508 短路
+
+            local MAX_DEPTH = 5
+
+            function envoy_on_request(request_handle)
+              local depth_str = request_handle:headers():get("x-call-depth") or "0"
+              local depth = tonumber(depth_str) or 0
+              depth = depth + 1
+              request_handle:headers():replace("x-call-depth", tostring(depth))
+
+              if depth > MAX_DEPTH then
+                request_handle:logWarn("[ChainGuard] call depth " .. tostring(depth) .. " exceeds max " .. tostring(MAX_DEPTH) .. ", short-circuiting")
+                request_handle:respond(
+                  {[":status"] = "508"},
+                  "Call chain too deep (depth=" .. tostring(depth) .. ", max=" .. tostring(MAX_DEPTH) .. "). Request short-circuited by EnvoyFilter."
+                )
+              end
+            end
+
+            function envoy_on_response(response_handle)
+              local depth_str = response_handle:headers():get("x-call-depth")
+              if depth_str then
+                response_handle:headers():replace("x-chain-depth-trace", depth_str)
+              end
+            end

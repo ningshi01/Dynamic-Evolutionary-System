@@ -1,0 +1,85 @@
+# ============================================================
+# 环路服务断路器 DestinationRule
+# 针对 DAG 环路 Retriever -> Query Embedding -> Vector DB -> Retriever
+# 为每个环路节点配置 连接池限制 + 异常检测(熔断)
+# ============================================================
+
+# ── Retriever Service ──
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: retriever-circuit-breaker
+  namespace: act-test
+spec:
+  host: retriever-service.act-test.svc.cluster.local
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 80
+        connectTimeout: 8s
+      http:
+        http1MaxPendingRequests: 50
+        http2MaxRequests: 80
+        maxRequestsPerConnection: 8
+        maxRetries: 2
+        idleTimeout: 60s
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 10s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+
+---
+# ── Embedding Service ──
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: embedding-circuit-breaker
+  namespace: act-test
+spec:
+  host: embedding-service.act-test.svc.cluster.local
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 60
+        connectTimeout: 10s
+      http:
+        http1MaxPendingRequests: 40
+        http2MaxRequests: 60
+        maxRequestsPerConnection: 5
+        maxRetries: 2
+        idleTimeout: 60s
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 10s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+
+---
+# ── Milvus (Vector DB) Service ──
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: milvus-circuit-breaker
+  namespace: act-test
+spec:
+  host: milvus-service.act-test.svc.cluster.local
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 120
+        connectTimeout: 10s
+      http:
+        http1MaxPendingRequests: 60
+        http2MaxRequests: 120
+        maxRequestsPerConnection: 10
+        maxRetries: 2
+        idleTimeout: 90s
+    outlierDetection:
+      consecutive5xxErrors: 5          # 存储服务允许更多容错
+      interval: 15s
+      baseEjectionTime: 45s
+      maxEjectionPercent: 30           # 存储层驱逐比例更保守
+      minHealthPercent: 50
