@@ -1,0 +1,24 @@
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: parser-vpa
+  namespace: act-test
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: parser-deployment
+  updatePolicy:
+    updateMode: "Auto"  # Auto: 自动更新资源并重启Pod | Recreate: 仅在Pod重启时更新 | Initial: 仅在创建时设置 | Off: 仅推荐不更新
+  resourcePolicy:
+    containerPolicies:
+    - containerName: parser
+      minAllowed:
+        cpu: 50m
+        memory: 128Mi
+      maxAllowed:
+        cpu: 2000m
+        memory: 2Gi
+      controlledResources: ["cpu", "memory"]
+      # 控制资源请求的扩缩模式
+      mode: Auto

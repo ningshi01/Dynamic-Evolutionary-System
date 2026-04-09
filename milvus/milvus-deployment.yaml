@@ -1,0 +1,165 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: milvus-etcd-pvc
+  namespace: act-test
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: etcd
+  namespace: act-test
+  labels:
+    app: milvus-etcd
+spec:
+  ports:
+  - port: 2379
+    protocol: TCP
+    name: client
+  selector:
+    app: milvus-etcd
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: milvus-etcd
+  namespace: act-test
+  labels:
+    app: milvus-etcd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: milvus-etcd
+  template:
+    metadata:
+      labels:
+        app: milvus-etcd
+    spec:
+      containers:
+      - name: etcd
+        image: registry.cn-hangzhou.aliyuncs.com/basic_ns/etcd:v3.5.18
+        # quay.mirrors.ustc.edu.cn/coreos/etcd:v3.5.18
+        command:
+        - etcd
+        - -advertise-client-urls=http://etcd:2379
+        - -listen-client-urls=http://0.0.0.0:2379
+        - --data-dir=/etcd
+        env:
+        - name: ETCD_AUTO_COMPACTION_MODE
+          value: "revision"
+        - name: ETCD_AUTO_COMPACTION_RETENTION
+          value: "1000"
+        - name: ETCD_QUOTA_BACKEND_BYTES
+          value: "4294967296"
+        - name: ETCD_SNAPSHOT_COUNT
+          value: "50000"
+        ports:
+        - containerPort: 2379
+        volumeMounts:
+        - name: etcd-data
+          mountPath: /etcd
+        readinessProbe:
+          exec:
+            command:
+            - etcdctl
+            - endpoint
+            - health
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          timeoutSeconds: 5
+      volumes:
+      - name: etcd-data
+        persistentVolumeClaim:
+          claimName: milvus-etcd-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: milvus-standalone-pvc
+  namespace: act-test
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: milvus-service
+  namespace: act-test
+  labels:
+    app: milvus-standalone
+spec:
+  type: NodePort
+  ports:
+    - name: grpc
+      port: 19530
+      protocol: TCP
+      targetPort: 19530
+    - name: http
+      port: 9091
+      protocol: TCP
+      targetPort: 9091
+  selector:
+    app: milvus-standalone
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: milvus-standalone
+  namespace: act-test
+  labels:
+    app: milvus-standalone
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: milvus-standalone
+  template:
+    metadata:
+      labels:
+        app: milvus-standalone
+    spec:
+      securityContext:
+        seccompProfile:
+          type: Unconfined
+      containers:
+      - name: milvus-standalone
+        image: docker.1ms.run/milvusdb/milvus:v2.5.13
+        command: ["milvus", "run", "standalone"]
+        env:
+        - name: ETCD_ENDPOINTS
+          value: "etcd:2379"
+        - name: MINIO_ADDRESS
+          value: "minio-service:9000" # Use existing minio service
+        - name: MINIO_ACCESS_KEY
+          value: "minioadmin"
+        - name: MINIO_SECRET_KEY
+          value: "minioadmin"
+        ports:
+        - containerPort: 19530
+        - containerPort: 9091
+        volumeMounts:
+        - name: milvus-data
+          mountPath: /var/lib/milvus
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 9091
+          initialDelaySeconds: 90
+          periodSeconds: 30
+          timeoutSeconds: 20
+      volumes:
+      - name: milvus-data
+        persistentVolumeClaim:
+          claimName: milvus-standalone-pvc 

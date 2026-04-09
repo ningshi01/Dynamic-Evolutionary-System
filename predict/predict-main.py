@@ -1,0 +1,740 @@
+import requests
+import json
+import csv
+import logging
+import math
+from datetime import datetime, timedelta,timezone
+import pandas as pd
+from prophet import Prophet
+import os
+import schedule
+import time
+from kubernetes import client, config
+from kubernetes.client.rest import ApiException
+from kubernetes.config.config_exception import ConfigException
+from kubernetes.utils.quantity import parse_quantity
+
+# 全局日志使用 Asia/Shanghai 时区
+_CST = timezone(timedelta(hours=8))
+
+
+class _CSTFormatter(logging.Formatter):
+    """Formatter that always uses CST (UTC+8) timestamps."""
+    converter = None  # disable default converter
+
+    def formatTime(self, record, datefmt=None):
+        dt = datetime.fromtimestamp(record.created, tz=_CST)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime('%Y-%m-%d %H:%M:%S') + f',{int(record.msecs):03d}'
+
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# 演化策略专用日志 - 使用特殊前缀便于在 K8s 中过滤
+evo_logger = logging.getLogger("evolution_strategy")
+evo_logger.setLevel(logging.INFO)
+if not evo_logger.handlers:
+    _evo_handler = logging.StreamHandler()
+    _evo_handler.setFormatter(_CSTFormatter('%(asctime)s [EVOLUTION] %(message)s'))
+    evo_logger.addHandler(_evo_handler)
+    evo_logger.propagate = False
+
+TARGET_DEPLOYMENTS = {
+    'api-deployment': 'api-hpa',
+    'fileservice-deployment': 'fileservice-hpa',
+    'parser-deployment': 'parser-hpa',
+    'retriever-deployment': 'retriever-hpa',
+}
+
+# 每个 Deployment 单 Pod 能处理的目标 QPS 上限（用于 type=2 QPS 副本调整）
+TARGET_QPS_PER_POD = {
+    'api-deployment': 10.0,
+    'fileservice-deployment': 5.0,
+    'parser-deployment': 5.0,
+    'retriever-deployment': 8.0,
+}
+
+_K8S_CONFIG_READY = False
+
+
+def load_kubernetes_config():
+    global _K8S_CONFIG_READY
+    if _K8S_CONFIG_READY:
+        return True
+    try:
+        config.load_incluster_config()
+        _K8S_CONFIG_READY = True
+        logger.info("已加载集群内 Kubernetes 配置")
+        return True
+    except ConfigException:
+        pass
+
+    try:
+        config.load_kube_config()
+        _K8S_CONFIG_READY = True
+        logger.info("已加载本地 kubeconfig 配置")
+        return True
+    except ConfigException as exc:
+        logger.error(f"加载 Kubernetes 配置失败: {exc}")
+        return False
+
+
+def parse_cpu_quantity_to_cores(cpu_quantity):
+    if not cpu_quantity:
+        return None
+    try:
+        return float(parse_quantity(cpu_quantity))
+    except (ValueError, TypeError) as exc:
+        logger.warning(f"解析 CPU request {cpu_quantity} 时出错: {exc}")
+        return None
+
+
+def extract_cpu_request_from_deployment(deployment):
+    containers = deployment.spec.template.spec.containers or []
+    total_requested = 0.0
+    for container in containers:
+        resources = container.resources
+        if not resources or not resources.requests:
+            continue
+        cpu_request = resources.requests.get('cpu')
+        cores = parse_cpu_quantity_to_cores(cpu_request)
+        if cores:
+            total_requested += cores
+    return total_requested if total_requested > 0 else None
+
+def parse_memory_quantity_to_mib(memory_quantity):
+    if not memory_quantity:
+        return None
+    try:
+        bytes_val = float(parse_quantity(memory_quantity))
+        return bytes_val / 1048576  # 转换为 MiB
+    except (ValueError, TypeError) as exc:
+        logger.warning(f"解析 Memory request {memory_quantity} 时出错: {exc}")
+        return None
+
+def extract_memory_request_from_deployment(deployment):
+    containers = deployment.spec.template.spec.containers or []
+    total_requested_mib = 0.0
+    for container in containers:
+        resources = container.resources
+        if not resources or not resources.requests:
+            continue
+        memory_request = resources.requests.get('memory')
+        mib = parse_memory_quantity_to_mib(memory_request)
+        if mib:
+            total_requested_mib += mib
+    return total_requested_mib if total_requested_mib > 0 else None
+
+def allocate_pods_based_on_forecast(deployment_scores, namespace, type):
+    if not load_kubernetes_config():
+        logger.warning("跳过自动副本调整：Kubernetes 配置不可用")
+        return
+
+    apps_v1 = client.AppsV1Api()
+    autoscaling_v2 = client.AutoscalingV2Api()
+
+    # type=2: QPS 扩缩容（使用 TARGET_QPS_PER_POD，无需 HPA resource 指标）
+    if type == 2 :
+        for deployment_name, hpa_name in TARGET_DEPLOYMENTS.items():
+            predicted_qps = deployment_scores.get(deployment_name)
+            if predicted_qps is None:
+                continue
+
+            target_qps = TARGET_QPS_PER_POD.get(deployment_name)
+            if not target_qps or target_qps <= 0:
+                logger.warning(f"Deployment {deployment_name} 未配置 TARGET_QPS_PER_POD，跳过QPS副本调整")
+                continue
+
+            try:
+                hpa = autoscaling_v2.read_namespaced_horizontal_pod_autoscaler(
+                    name=hpa_name, namespace=namespace)
+            except ApiException as exc:
+                logger.warning(f"读取 {hpa_name} 失败: {exc}")
+                continue
+
+            min_replicas = hpa.spec.min_replicas or 1
+            max_replicas = hpa.spec.max_replicas or min_replicas
+
+            if predicted_qps <= 0:
+                recommended = min_replicas
+            else:
+                required = math.ceil(predicted_qps / target_qps)
+                recommended = max(required, 1)
+
+            if recommended <= min_replicas:
+                logger.info(f"Deployment {deployment_name} QPS预测所需副本 {recommended} 低于 HPA 下限 {min_replicas}，触发缩容，按下限处理")
+                evo_logger.info(f"Evolution Strategy - 1 - {deployment_name} QPS预测副本{recommended}低于HPA下限{min_replicas}，触发缩容，按下限处理")
+                recommended = min_replicas
+            elif recommended >= max_replicas:
+                logger.info(f"Deployment {deployment_name} QPS预测所需副本 {recommended} 超出 HPA 上限 {max_replicas}，触发扩容，按上限处理")
+                evo_logger.info(f"Evolution Strategy - 1 - {deployment_name} QPS预测副本{recommended}超出HPA上限{max_replicas}, 触发扩容，按上限处理")
+                recommended = max_replicas
+
+            try:
+                deployment = apps_v1.read_namespaced_deployment(
+                    name=deployment_name, namespace=namespace)
+            except ApiException as exc:
+                logger.warning(f"读取 Deployment {deployment_name} 失败: {exc}")
+                continue
+
+            current_replicas = deployment.spec.replicas or min_replicas
+            if recommended < current_replicas:
+                # 预测数低于实际数，把 maxReplicas 降到预测数触发缩容，再恢复为 10
+                try:
+                    autoscaling_v2.patch_namespaced_horizontal_pod_autoscaler(
+                        name=hpa_name, namespace=namespace,
+                        body={'spec': {'maxReplicas': recommended}},
+                    )
+                    evo_logger.info(f"Evolution Strategy - 1 - {deployment_name} QPS预测触发缩容: 当前{current_replicas}→目标{recommended}, 已将 {hpa_name} maxReplicas 降至 {recommended}")
+                    time.sleep(30)
+                    autoscaling_v2.patch_namespaced_horizontal_pod_autoscaler(
+                        name=hpa_name, namespace=namespace,
+                        body={'spec': {'maxReplicas': 10}},
+                    )
+                    evo_logger.info(f"Evolution Strategy - 1 - {deployment_name} 缩容完成, 已将 {hpa_name} maxReplicas 恢复为 10")
+                except ApiException as exc:
+                    logger.error(f"缩容操作 {hpa_name} 失败: {exc}")
+            elif recommended > current_replicas:
+                # 预测数高于实际数，把 minReplicas 升到预测数触发扩容，再恢复为 1
+                try:
+                    autoscaling_v2.patch_namespaced_horizontal_pod_autoscaler(
+                        name=hpa_name, namespace=namespace,
+                        body={'spec': {'minReplicas': recommended}},
+                    )
+                    evo_logger.info(f"Evolution Strategy - 1 - {deployment_name} QPS预测触发扩容: 当前{current_replicas}→目标{recommended}, 已将 {hpa_name} minReplicas 升至 {recommended}")
+                    time.sleep(30)
+                    autoscaling_v2.patch_namespaced_horizontal_pod_autoscaler(
+                        name=hpa_name, namespace=namespace,
+                        body={'spec': {'minReplicas': 1}},
+                    )
+                    evo_logger.info(f"Evolution Strategy - 1 - {deployment_name} 扩容完成, 已将 {hpa_name} minReplicas 恢复为 1")
+                except ApiException as exc:
+                    logger.error(f"扩容操作 {hpa_name} 失败: {exc}")
+            else:
+                logger.info(f"Deployment {deployment_name} 预测副本数 {recommended} 与当前副本数一致，无需调整")
+                evo_logger.info(f"Evolution Strategy - 1 - {deployment_name} QPS预测副本数{recommended}与当前一致，无需调整")
+        return
+
+    # 定义资源配置（type=1: CPU, type=3: Memory）
+    resource_configs = {
+        1: {'name': 'cpu', 'display': 'CPU', 'request_extractor': extract_cpu_request_from_deployment},
+        3: {'name': 'memory', 'display': 'Memory', 'request_extractor': extract_memory_request_from_deployment},
+    }
+
+    if type not in resource_configs:
+        logger.error(f"不支持的type参数: {type}")
+        return
+
+    config = resource_configs[type]
+    resource_name = config['name']
+    resource_display = config['display']
+    request_extractor = config['request_extractor']
+
+    for deployment_name, hpa_name in TARGET_DEPLOYMENTS.items():
+        predicted_usage = deployment_scores.get(deployment_name)
+        if predicted_usage is None:
+            continue
+
+        try:
+            hpa = autoscaling_v2.read_namespaced_horizontal_pod_autoscaler(
+                name=hpa_name,
+                namespace=namespace,
+            )
+        except ApiException as exc:
+            logger.warning(f"读取 {hpa_name} 失败: {exc}")
+            continue
+
+        average_util = None
+        if hpa.spec.metrics:
+            for metric in hpa.spec.metrics:
+                if metric.type == 'Resource' and metric.resource and metric.resource.name == resource_name:
+                    target = metric.resource.target
+                    if target and target.average_utilization is not None:
+                        average_util = target.average_utilization
+                        break
+
+        min_replicas = hpa.spec.min_replicas or 1
+        max_replicas = hpa.spec.max_replicas or min_replicas
+
+        if average_util is None:
+            logger.warning(f"{hpa_name} 缺少 {resource_display} averageUtilization 配置，跳过")
+            continue
+
+        try:
+            deployment = apps_v1.read_namespaced_deployment(
+                name=deployment_name,
+                namespace=namespace,
+            )
+        except ApiException as exc:
+            logger.warning(f"读取 Deployment {deployment_name} 失败: {exc}")
+            continue
+
+        resource_request = request_extractor(deployment)
+        if resource_request is None or resource_request <= 0:
+            logger.warning(f"Deployment {deployment_name} 未配置 {resource_display} requests，跳过自动副本调整")
+            continue
+
+        target_ratio = average_util / 100.0
+        if target_ratio <= 0:
+            logger.warning(f"{hpa_name} 的 averageUtilization = {average_util} 无效，跳过")
+            continue
+
+        target_resource_per_pod = resource_request * target_ratio
+        if target_resource_per_pod <= 0:
+            logger.warning(f"Deployment {deployment_name} 计算得到的单 Pod 目标 {resource_display} 为 0，跳过")
+            continue
+
+        if predicted_usage <= 0:
+            recommended = min_replicas
+        else:
+            required = math.ceil(predicted_usage / target_resource_per_pod)
+            recommended = max(required, 1)
+
+        if recommended <= min_replicas:
+            logger.info(
+                f"Deployment {deployment_name} 预测所需副本 {recommended} 低于 HPA 下限 {min_replicas}，触发缩容，按下限处理"
+            )
+            evo_logger.info(f"Evolution Strategy - 1 - {deployment_name} 预测副本{recommended}低于HPA下限{min_replicas}，触发缩容，按下限处理")
+        elif recommended >= max_replicas:
+            logger.info(
+                f"Deployment {deployment_name} 预测所需副本 {recommended} 超出 HPA 上限 {max_replicas}，触发扩容，按上限处理"
+            )
+            evo_logger.info(f"Evolution Strategy - 1 - {deployment_name} 预测副本{recommended}超出HPA上限{max_replicas}，触发扩容，按上限处理")
+            recommended = max_replicas
+
+        current_replicas = deployment.spec.replicas or min_replicas
+        if recommended < current_replicas:
+            # 预测数低于实际数，把 maxReplicas 降到预测数触发缩容，再恢复为 10
+            try:
+                autoscaling_v2.patch_namespaced_horizontal_pod_autoscaler(
+                    name=hpa_name,
+                    namespace=namespace,
+                    body={'spec': {'maxReplicas': recommended}},
+                )
+                evo_logger.info(f"Evolution Strategy - 1 - {deployment_name} {resource_display}预测触发缩容: 当前{current_replicas}→目标{recommended}, 已将 {hpa_name} maxReplicas 降至 {recommended}")
+                time.sleep(30)
+                autoscaling_v2.patch_namespaced_horizontal_pod_autoscaler(
+                    name=hpa_name,
+                    namespace=namespace,
+                    body={'spec': {'maxReplicas': 10}},
+                )
+                evo_logger.info(f"Evolution Strategy - 1 - {deployment_name} 缩容完成, 已将 {hpa_name} maxReplicas 恢复为 10")
+            except ApiException as exc:
+                logger.error(f"缩容操作 {hpa_name} 失败: {exc}")
+        elif recommended > current_replicas:
+            # 预测数高于实际数，把 minReplicas 升到预测数触发扩容，再恢复为 1
+            try:
+                autoscaling_v2.patch_namespaced_horizontal_pod_autoscaler(
+                    name=hpa_name,
+                    namespace=namespace,
+                    body={'spec': {'minReplicas': recommended}},
+                )
+                evo_logger.info(f"Evolution Strategy - 1 - {deployment_name} {resource_display}预测触发扩容: 当前{current_replicas}→目标{recommended}, 已将 {hpa_name} minReplicas 升至 {recommended}")
+                time.sleep(30)
+                autoscaling_v2.patch_namespaced_horizontal_pod_autoscaler(
+                    name=hpa_name,
+                    namespace=namespace,
+                    body={'spec': {'minReplicas': 1}},
+                )
+                evo_logger.info(f"Evolution Strategy - 1 - {deployment_name} 扩容完成, 已将 {hpa_name} minReplicas 恢复为 1")
+            except ApiException as exc:
+                logger.error(f"扩容操作 {hpa_name} 失败: {exc}")
+        else:
+            logger.info(f"Deployment {deployment_name} 预测副本数 {recommended} 与当前副本数一致，无需调整")
+            evo_logger.info(f"Evolution Strategy - 1 - {deployment_name} {resource_display}预测副本数{recommended}与当前一致，无需调整")
+
+
+
+def export_prometheus_CPU_data():
+    evo_logger.info("Evolution Strategy - 1 - 开始采集 Prometheus CPU 时序数据")
+    prom_url = "http://prometheus.istio-system.svc.cluster.local:9090"
+    namespace = "act-test"
+    time_range = "1h"
+
+    # 构建查询 - 排除istio-proxy容器-基于deployment
+    query = f'''
+    sum by (deployment) (
+        label_replace(
+            rate(container_cpu_usage_seconds_total{{container!="istio-proxy", container!="", namespace="{namespace}"}}[{time_range}]),
+            "deployment", "$1", "pod", "(.*)-[a-z0-9]+-[a-z0-9]+"
+        )
+    )
+    '''
+
+    # 使用query_range获取时间序列数据
+    end_time = datetime.now()
+    start_time = end_time - timedelta(hours=1)
+    step = "1m"  # 1分钟间隔
+
+    response = requests.get(
+        f"{prom_url}/api/v1/query_range",
+        params={
+            'query': query,
+            'start': start_time.timestamp(),
+            'end': end_time.timestamp(),
+            'step': step
+        }
+    )
+
+    if response.status_code == 200:
+        data = response.json()
+
+        if data['data']['result']:
+            deployments_cpu_data = {}
+
+            # 按deployment分组数据
+            for result in data['data']['result']:
+                metric = result['metric']
+                deployment_name = metric.get('deployment', 'unknown')
+
+                if deployment_name not in deployments_cpu_data:
+                    deployments_cpu_data[deployment_name] = {
+                        'deployment': deployment_name,
+                        'data': []
+                    }
+
+                # 收集该deployment的所有时间序列数据
+                for value_pair in result['values']:
+                    timestamp = value_pair[0]
+                    value = float(value_pair[1])
+                    readable_time = datetime.fromtimestamp(float(timestamp)).strftime('%Y-%m-%d %H:%M:%S')
+
+                    deployments_cpu_data[deployment_name]['data'].append({
+                        'timestamp': timestamp,
+                        'datetime': readable_time,
+                        'value': value
+                    })
+
+            # 为每个deployment创建CSV文件 - 已注释掉
+            deployment_files = {}
+            for deployment_name, deployment_info in deployments_cpu_data.items():
+                # 跳过unknown deployment
+                if deployment_name == 'unknown':
+                    continue
+
+                filename = f'data_{namespace}_{time_range}_CPU_deployment_{deployment_name}.csv'
+
+                # 注释掉CSV文件写入代码
+                # with open(filename, 'w', newline='') as f:
+                #     writer = csv.writer(f)
+                #     writer.writerow(['timestamp', 'datetime', 'deployment', 'cpu_cores'])
+                #
+                #     for data_point in deployment_info['data']:
+                #         writer.writerow([
+                #             data_point['timestamp'],
+                #             data_point['datetime'],
+                #             deployment_name,
+                #             f"{data_point['value']:.6f}"  # 保留6位小数
+                #         ])
+
+                # 仍然保留文件名映射用于后续处理
+                deployment_files[deployment_name] = filename
+                # logger.info(f"Deployment {deployment_name} 的CPU数据处理完成")
+
+            logger.info(f"共处理 {len([d for d in deployments_cpu_data.keys() if d != 'unknown'])} 个deployment的时间序列数据")
+            evo_logger.info(f"Evolution Strategy - 1 - CPU数据采集完成, 共{len([d for d in deployments_cpu_data.keys() if d != 'unknown'])}个deployment")
+
+            # 为每个deployment生成预测
+            evo_logger.info("Evolution Strategy - 1 - 开始基于Prophet模型进行CPU时序预测")
+            generate_prophet_forecasts(deployments_cpu_data, namespace, 1)
+        else:
+            logger.info("查询成功，但未找到CPU使用率数据")
+    else:
+        logger.error(f"CPU查询失败: {response.status_code}")
+
+def generate_prophet_forecasts(deployments_data, namespace, type):
+    """
+    为每个deployment的数据使用Prophet进行预测，并计算预测得分的均值
+    type=1: CPU使用率预测
+    type=2: QPS预测 (istio_requests_total, req/s)
+    type=3: 内存使用量预测 (container_memory_working_set_bytes, MiB)
+    """
+    deployment_scores = {}
+
+    # 定义指标配置
+    metric_configs = {
+        1: {'column': 'cpu_cores', 'name': 'CPU', 'display': 'CPU使用率'},
+        2: {'column': 'qps', 'name': 'QPS', 'display': 'QPS(请求数/秒)'},
+        3: {'column': 'memory_mib', 'name': 'Memory', 'display': '内存使用量(MiB)'},
+    }
+
+    # 检查type是否支持
+    if type not in metric_configs:
+        logger.error(f"不支持的type参数: {type}，支持的类型: {list(metric_configs.keys())}")
+        return
+
+    config = metric_configs[type]
+    metric_column = config['column']
+    metric_name = config['name']
+    metric_display = config['display']
+
+    for deployment_name, deployment_info in deployments_data.items():
+        # 跳过unknown deployment
+        if deployment_name == 'unknown':
+            continue
+
+        try:
+            # 直接从内存中的数据创建DataFrame，而不是从CSV文件读取
+            data_points = deployment_info['data']
+
+            # 准备DataFrame
+            df_data = {
+                'timestamp': [point['timestamp'] for point in data_points],
+                'datetime': [point['datetime'] for point in data_points],
+                metric_column: [point['value'] for point in data_points]
+            }
+            df = pd.DataFrame(df_data)
+
+            # 准备Prophet需要的数据格式
+            prophet_df = pd.DataFrame({
+                'ds': pd.to_datetime(df['datetime']),
+                'y': df[metric_column]
+            })
+
+            # 创建并训练Prophet模型
+            model = Prophet(
+                daily_seasonality=True,
+                yearly_seasonality=False,
+                weekly_seasonality=False,
+                changepoint_prior_scale=0.05
+            )
+
+            # 添加小时级别的季节性
+            model.add_seasonality(name='hourly', period=1 / 24, fourier_order=5)
+
+            # 训练模型
+            model.fit(prophet_df)
+
+            # 创建未来1小时的预测数据框（保持1分钟间隔）
+            future = model.make_future_dataframe(periods=60, freq='1min')
+
+            # 进行预测
+            forecast = model.predict(future)
+
+            # 只保留未来的预测部分（最后60个数据点）
+            future_forecast = forecast.tail(60).copy()
+
+            # 添加deployment列
+            future_forecast['deployment'] = deployment_name
+
+            # 根据type选择列名
+            if type == 1:
+                forecast_result = future_forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper', 'deployment']]
+                forecast_result.columns = ['datetime', 'predicted_cpu_cores', 'predicted_lower', 'predicted_upper',
+                                           'deployment']
+            elif type == 2:
+                forecast_result = future_forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper', 'deployment']]
+                forecast_result.columns = ['datetime', 'predicted_qps', 'predicted_lower', 'predicted_upper',
+                                           'deployment']
+            elif type == 3:
+                forecast_result = future_forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper', 'deployment']]
+                forecast_result.columns = ['datetime', 'predicted_memory_mib', 'predicted_lower', 'predicted_upper',
+                                           'deployment']
+
+            # 格式化datetime
+            forecast_result['datetime'] = forecast_result['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
+
+            # 计算预测得分的均值（使用yhat列）
+            predicted_values = forecast_result.iloc[:, 1]  # 第二列是预测值
+            predicted_values_non_negative = predicted_values.clip(lower=0)  # 将所有小于0的值设为0
+            mean_prediction = predicted_values_non_negative.mean()
+            deployment_scores[deployment_name] = mean_prediction
+            logger.info(f"Deployment {deployment_name} 的{metric_name}预测完成, 均值={mean_prediction:.6f}")
+
+        except Exception as e:
+            logger.error(f"为Deployment {deployment_name} 生成{metric_name}预测时出错: {str(e)}")
+
+    # 统一输出一条汇总日志
+    if deployment_scores:
+        lines = [f'{name}={score:.6f}' for name, score in deployment_scores.items()]
+        summary = ' | '.join(lines)
+        evo_logger.info(
+            f"Evolution Strategy - 1 - {metric_name}预测完成({len(deployment_scores)}个deployment): | {summary}"
+        )
+
+        # CPU(type=1)、QPS(type=2)、Memory(type=3) 均触发副本调整
+        if type in (1, 2, 3):
+            evo_logger.info(f"Evolution Strategy - 1 - 开始基于{metric_name}预测结果进行副本数调整")
+            allocate_pods_based_on_forecast(deployment_scores, namespace, type)
+        else:
+            evo_logger.info(
+                f"Evolution Strategy - 1 - {metric_name}预测结果已记录(仅观测, 不触发副本调整)"
+            )
+    else:
+        evo_logger.info(f"Evolution Strategy - 1 - 未生成任何{metric_display}预测结果, 跳过自动副本调整")
+
+
+def export_prometheus_QPS_data():
+    evo_logger.info("Evolution Strategy - 1 - 开始采集 Prometheus QPS 时序数据")
+    prom_url = "http://prometheus.istio-system.svc.cluster.local:9090"
+    namespace = "act-test"
+    time_range = "1h"
+
+    # 使用 Istio 请求速率指标，按 destination_workload 分组后映射为 deployment
+    query = f'''
+    sum by (deployment) (
+        label_replace(
+            rate(istio_requests_total{{destination_namespace="{namespace}", reporter="destination"}}[1m]),
+            "deployment", "$1", "destination_workload", "(.*)"
+        )
+    )
+    '''
+
+    end_time = datetime.now()
+    start_time = end_time - timedelta(hours=1)
+    step = "1m"
+
+    response = requests.get(
+        f"{prom_url}/api/v1/query_range",
+        params={
+            'query': query,
+            'start': start_time.timestamp(),
+            'end': end_time.timestamp(),
+            'step': step
+        }
+    )
+
+    if response.status_code == 200:
+        data = response.json()
+
+        if data['data']['result']:
+            deployments_qps_data = {}
+
+            for result in data['data']['result']:
+                metric = result['metric']
+                deployment_name = metric.get('deployment', 'unknown')
+
+                if deployment_name not in deployments_qps_data:
+                    deployments_qps_data[deployment_name] = {
+                        'deployment': deployment_name,
+                        'data': []
+                    }
+
+                for value_pair in result['values']:
+                    timestamp = value_pair[0]
+                    value = float(value_pair[1])
+                    readable_time = datetime.fromtimestamp(float(timestamp)).strftime('%Y-%m-%d %H:%M:%S')
+                    deployments_qps_data[deployment_name]['data'].append({
+                        'timestamp': timestamp,
+                        'datetime': readable_time,
+                        'value': value
+                    })
+
+            valid_count = len([d for d in deployments_qps_data.keys() if d != 'unknown'])
+            logger.info(f"共处理 {valid_count} 个deployment的QPS时间序列数据")
+            evo_logger.info(f"Evolution Strategy - 1 - QPS数据采集完成, 共{valid_count}个deployment")
+
+            evo_logger.info("Evolution Strategy - 1 - 开始基于Prophet模型进行QPS时序预测")
+            generate_prophet_forecasts(deployments_qps_data, namespace, 2)
+        else:
+            logger.info("查询成功，但未找到QPS数据")
+    else:
+        logger.error(f"QPS查询失败: {response.status_code}")
+
+
+def export_prometheus_Memory_data():
+    evo_logger.info("Evolution Strategy - 1 - 开始采集 Prometheus 内存 时序数据")
+    prom_url = "http://prometheus.istio-system.svc.cluster.local:9090"
+    namespace = "act-test"
+    time_range = "1h"
+
+    # container_memory_working_set_bytes 单位为 Bytes，转换为 MiB
+    query = f'''
+    sum by (deployment) (
+        label_replace(
+            container_memory_working_set_bytes{{container!="istio-proxy", container!="", namespace="{namespace}"}},
+            "deployment", "$1", "pod", "(.*)-[a-z0-9]+-[a-z0-9]+"
+        )
+    ) / 1048576
+    '''
+
+    end_time = datetime.now()
+    start_time = end_time - timedelta(hours=1)
+    step = "1m"
+
+    response = requests.get(
+        f"{prom_url}/api/v1/query_range",
+        params={
+            'query': query,
+            'start': start_time.timestamp(),
+            'end': end_time.timestamp(),
+            'step': step
+        }
+    )
+
+    if response.status_code == 200:
+        data = response.json()
+
+        if data['data']['result']:
+            deployments_mem_data = {}
+
+            for result in data['data']['result']:
+                metric = result['metric']
+                deployment_name = metric.get('deployment', 'unknown')
+
+                if deployment_name not in deployments_mem_data:
+                    deployments_mem_data[deployment_name] = {
+                        'deployment': deployment_name,
+                        'data': []
+                    }
+
+                for value_pair in result['values']:
+                    timestamp = value_pair[0]
+                    value = float(value_pair[1])
+                    readable_time = datetime.fromtimestamp(float(timestamp)).strftime('%Y-%m-%d %H:%M:%S')
+                    deployments_mem_data[deployment_name]['data'].append({
+                        'timestamp': timestamp,
+                        'datetime': readable_time,
+                        'value': value
+                    })
+
+            valid_count = len([d for d in deployments_mem_data.keys() if d != 'unknown'])
+            logger.info(f"共处理 {valid_count} 个deployment的内存时间序列数据")
+            evo_logger.info(f"Evolution Strategy - 1 - 内存数据采集完成, 共{valid_count}个deployment")
+
+            evo_logger.info("Evolution Strategy - 1 - 开始基于Prophet模型进行内存时序预测")
+            generate_prophet_forecasts(deployments_mem_data, namespace, 3)
+        else:
+            logger.info("查询成功，但未找到内存使用数据")
+    else:
+        logger.error(f"内存查询失败: {response.status_code}")
+
+
+def job():
+    """每小时执行的任务（带重试机制）"""
+    evo_logger.info("Evolution Strategy - 1 - 定时预测任务启动")
+    logger.info(f"开始执行数据导出任务 - {datetime.now()}")
+    
+    max_retries = 3  # 最大重试次数
+    retry_delay = 5  # 重试延迟（秒）
+    
+    for attempt in range(max_retries):
+        try:
+            export_prometheus_CPU_data()
+            export_prometheus_QPS_data()
+            export_prometheus_Memory_data()
+            logger.info("任务执行成功")
+            return  # 成功则退出函数
+        except Exception as e:
+            logger.error(f"任务执行失败 (第{attempt + 1}次尝试): {e}")
+            
+            if attempt < max_retries - 1:  # 不是最后一次尝试
+                logger.info(f"{retry_delay}秒后重试...")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # 指数退避
+            else:
+                logger.error(f"任务重试{max_retries}次后仍失败，放弃执行")
+
+def run_scheduler():
+    """调度器"""
+    schedule.every(1).hours.do(job)
+    job()
+    logger.info("调度器已启动，将每小时执行一次...")
+    while True:
+        schedule.run_pending()
+        time.sleep(60)  # 每分钟检查一次
+
+if __name__ == "__main__":
+    run_scheduler()

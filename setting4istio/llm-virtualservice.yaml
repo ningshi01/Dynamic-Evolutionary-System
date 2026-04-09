@@ -1,0 +1,108 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: llm-virtualservice
+  namespace: act-test
+spec:
+  hosts:
+  - llm-service.act-test.svc.cluster.local
+  http:
+  # 规则 1: 请求头 x-llm-version=v2 -> 路由至大模型 (subset v2, Qwen3-1.7B)
+  - name: "big-model-route"
+    match:
+    - headers:
+        x-llm-version:
+          exact: "v2"
+    timeout: 120s                       # 大模型推理耗时更长
+    retries:
+      attempts: 2
+      perTryTimeout: 60s
+      retryOn: 5xx,reset,connect-failure,retriable-4xx
+    route:
+    - destination:
+        host: llm-service.act-test.svc.cluster.local
+        subset: v2
+      weight: 100
+  # 规则 2: 默认路由 -> 小模型 (subset v1, Qwen3-0.6B)
+  - name: "default-route"
+    timeout: 60s                        # 请求级超时 (LLM 推理耗时较长)
+    retries:
+      attempts: 2                       # 最大重试次数
+      perTryTimeout: 30s                # 单次重试超时
+      retryOn: 5xx,reset,connect-failure,retriable-4xx  # 重试条件
+    route:
+    - destination:
+        host: llm-service.act-test.svc.cluster.local
+        subset: v1
+      weight: 100
+
+---
+# ============================================================
+# 环路服务 VirtualService — 超时 + 重试
+# 针对 Retriever <-> Embedding <-> VectorDB 循环调用链路
+# ============================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: retriever-virtualservice
+  namespace: act-test
+spec:
+  hosts:
+  - retriever-service.act-test.svc.cluster.local
+  http:
+  - name: "retriever-route"
+    timeout: 30s
+    retries:
+      attempts: 2
+      perTryTimeout: 12s
+      retryOn: 5xx,reset,connect-failure
+    route:
+    - destination:
+        host: retriever-service.act-test.svc.cluster.local
+        port:
+          number: 80
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: embedding-virtualservice
+  namespace: act-test
+spec:
+  hosts:
+  - embedding-service.act-test.svc.cluster.local
+  http:
+  - name: "embedding-route"
+    timeout: 20s
+    retries:
+      attempts: 2
+      perTryTimeout: 8s
+      retryOn: 5xx,reset,connect-failure
+    route:
+    - destination:
+        host: embedding-service.act-test.svc.cluster.local
+        port:
+          number: 80
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: milvus-virtualservice
+  namespace: act-test
+spec:
+  hosts:
+  - milvus-service.act-test.svc.cluster.local
+  http:
+  - name: "milvus-route"
+    timeout: 15s
+    retries:
+      attempts: 2
+      perTryTimeout: 6s
+      retryOn: 5xx,reset,connect-failure
+    route:
+    - destination:
+        host: milvus-service.act-test.svc.cluster.local
+        port:
+          number: 19530

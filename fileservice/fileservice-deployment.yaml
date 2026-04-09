@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fileservice-deployment
+  namespace: act-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fileservice
+  template:
+    metadata:
+      labels:
+        app: fileservice
+    spec:
+      containers:
+      - name: fileservice
+        image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/minio-fileservice:latest  # <-- IMPORTANT: Replace with your image
+        ports:
+        - containerPort: 8000
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+        env:
+        - name: MINIO_ENDPOINT
+          value: "minio-service:9000"
+        - name: MINIO_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: minio-secret
+              key: MINIO_ACCESS_KEY
+        - name: MINIO_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: minio-secret
+              key: MINIO_SECRET_KEY
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fileservice-service
+  namespace: act-test
+spec:
+  selector:
+    app: fileservice
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: NodePort 

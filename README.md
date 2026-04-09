@@ -1,322 +1,218 @@
-# RAG System on Kubernetes
+# Dynamic-Evolutionary-System
 
-This project provides a complete, multi-service RAG (Retrieval-Augmented Generation) system designed to run on Kubernetes. It includes services for file storage (MinIO), document parsing, text embedding, reranking, language model serving (LLM), and a unified API Gateway.
+构建一个云原生软件系统动态演化框架，目前具体表现形式可能是一个RAG应用或Agent应用（待定），当前形式为自适应RAG对话系统，基于Kubernetes，要求支持微服务副本调整、服务拓扑调整、数据流优化等≥3 种系统演化能力。该系统将各RAG组件微服务化，实现基础设施资源的智能调度与分配，支持服务弹性伸缩，并通过完整的监控体系展示系统动态演化过程。
+本项目当前内嵌服务为一个完整的多服务检索增强生成 (RAG) 系统，旨在 Kubernetes 上运行。它包括文件存储 (MinIO)、文档解析、文本嵌入、重排序、语言模型服务 (LLM) 和统一 API 网关等服务。
 
-## High-Level Architecture
+## 高层架构
 
-1.  **API Gateway (`api-service`)**: The single entry point for all external requests.
-2.  **File Service (`fileservice`)**: Handles file uploads and downloads to and from MinIO.
-3.  **Parser Service (`parser-service`)**: Splits documents into text chunks.
-4.  **Retriever Service (`retriever-service`)**: The core orchestration layer. It communicates with the embedding, reranker, and LLM models, and manages vector storage in Milvus.
-5.  **Model Services (`embedding`, `reranker`, `llm`)**: Dedicated, GPU-powered services running models with vLLM for high performance.
-6.  **Vector Database (`milvus`)**: Stores and indexes document vectors for fast retrieval.
-7.  **Object Storage (`minio`)**: Stores the original source documents.
+* **API 网关 (api-service)**：所有外部请求的单一入口点。
+* **文件服务 (fileservice)**：处理文件到 MinIO 的上传和下载。
+* **解析服务 (parser-service)**：将文档分割成文本块。
+* **检索器服务 (retriever-service)**：核心编排层。它与嵌入、重排序和 LLM 模型通信，并管理 Milvus 中的向量存储。
+* **模型服务 (embedding, reranker, llm)**：专用、GPU 驱动的服务，使用 vLLM 运行模型以实现高性能。
+* **向量数据库 (milvus)**：存储和索引文档向量，用于快速检索。
+* **对象存储 (minio)**：存储原始源文档。
 
-## Deployment
 
-Please refer to the individual `*.yaml` files for deployment instructions for each component. Ensure you build and push the Docker images for `api-service`, `fileservice`, `parser-service`, and `retriever-service` to a registry accessible by your Kubernetes cluster before applying the manifests.
 
-## System API Endpoints (via API Gateway)
+## 部署步骤
 
-All interactions with the RAG system should go through the **API Gateway**. It provides a clean, high-level interface for managing knowledge bases and performing queries.
+按照以下步骤将整个堆栈部署到您的 Kubernetes 集群。
 
-First, find the NodePort for the API Gateway:
-```bash
-kubectl get svc api-service -n rag
-```
-Use the returned IP and port for all the following requests (`http://<your-node-ip>:<api-gateway-node-port>`).
+### 1. 部署 MinIO
 
----
-
-### 1. Knowledge Base Management
-
-#### Create a Knowledge Base
-
-Creates a new, empty knowledge base (a "collection" in Milvus).
-
-- **Endpoint**: `POST /collections`
-- **Body**:
-  ```json
-  {
-    "collection_name": "my_new_kb"
-  }
-  ```
-- **Example:**
-  ```bash
-  curl -X POST http://<api-gateway-url>/collections \
-    -H "Content-Type: application/json" \
-    -d '{"collection_name": "my_new_kb"}'
-  ```
-
-#### Delete a Knowledge Base
-
-Permanently deletes a knowledge base and all its content.
-
-- **Endpoint**: `DELETE /collections/{collection_name}`
-- **Example:**
-  ```bash
-  curl -X DELETE http://<api-gateway-url>/collections/my_new_kb
-  ```
-
----
-
-### 2. Adding Content
-
-#### Add a File to a Knowledge Base
-
-This is the main pipeline for adding new information. It automatically handles file upload, text splitting, embedding, and storage.
-
-- **Endpoint**: `POST /add_file_to_collection`
-- **Request Type**: `multipart/form-data`
-- **Form Fields**:
-  - `file`: The document to be added (e.g., `.txt`, `.md`).
-  - `collection_name`: The target knowledge base.
-- **Example:**
-  ```bash
-  curl -X POST http://<api-gateway-url>/add_file_to_collection \
-    -F "file=@/path/to/your/document.txt" \
-    -F "collection_name=my_new_kb"
-  ```
-
----
-
-### 3. Asking Questions (RAG)
-
-#### Get a Chat Completion
-
-Ask a question against a specific knowledge base and get a RAG-powered answer. This endpoint is designed to be compatible with the OpenAI Chat Completions API format.
-
-- **Endpoint**: `POST /chat/completions`
-- **Body**:
-  - `model`: (Required) The name of the knowledge base to query (e.g., `"my_new_kb"`).
-  - `messages`: A list of messages, following the OpenAI format. The content of the last "user" role message is used as the query.
-  - `stream`: (Optional) Set to `true` for a streaming response. Defaults to `false`.
-- **Example (Non-Streaming):**
-  ```bash
-  curl -X POST http://<api-gateway-url>/chat/completions \
-    -H "Content-Type: application/json" \
-    -d '{
-      "model": "my_new_kb",
-      "messages": [
-        {"role": "user", "content": "What is the main topic of the document?"}
-      ],
-      "stream": false
-    }'
-  ```
-
-- **Example (Streaming):**
-  ```bash
-  curl -N -X POST http://<api-gateway-url>/chat/completions \
-    -H "Content-Type: application/json" \
-    -d '{
-      "model": "my_new_kb",
-      "messages": [
-        {"role": "user", "content": "Summarize the document in three bullet points."}
-      ],
-      "stream": true
-    }'
-  ```
-
-## Project Structure
-
-```
-.
-├── Dockerfile
-├── fileservice-deployment.yaml
-├── main.py
-├── minio-deployment.yaml
-├── parser-deployment.yaml
-├── parser-main.py
-├── parser.Dockerfile
-├── parser-requirements.txt
-└── requirements.txt
-```
-
-## Deployment Steps
-
-Follow these steps to deploy the entire stack to your Kubernetes cluster.
-
-### 1. Deploy MinIO
-
-First, deploy the MinIO server. This command will also create the `rag` namespace for all our services.
+首先，部署 MinIO 服务器。此命令还将为我们所有服务创建 `rag` 命名空间。
 
 ```bash
 kubectl apply -f minio-deployment.yaml
 ```
 
-After applying, you can check the status of the MinIO pod in the `rag` namespace:
+应用后，您可以在 `rag` 命名空间中检查 MinIO Pod 的状态：
+
 ```bash
 kubectl get pods -l app=minio -n rag
 ```
 
-### 2. Build and Push the File Service Docker Image
+### 2. 构建并推送文件服务 Docker 镜像
 
-The file service needs to be containerized before deploying.
+文件服务需要在部署前进行容器化。
+**重要提示**：您需要安装 Docker 并登录到您的 Kubernetes 集群可以从中拉取镜像的容器注册表（例如 Docker Hub）。
 
-**Important:** You need to have Docker installed and be logged into a container registry (like Docker Hub) that your Kubernetes cluster can pull from.
+**构建镜像**：
+导航到项目目录并运行构建命令。将 `crater-harbor.act.buaa.edu.cn/user-liujh24/minio-fileservice:latest` 替换为您自己的镜像名称。
 
-1.  **Build the image:**
-    Navigate to the project directory and run the build command. Replace `your-dockerhub-username/minio-fileservice:latest` with your own image name.
+```bash
+docker build -t crater-harbor.act.buaa.edu.cn/user-liujh24/minio-fileservice:latest .
+```
 
-    ```bash
-    docker build -t crater-harbor.act.buaa.edu.cn/user-liujh24/minio-fileservice:latest .
-    ```
+**推送镜像**：
+将镜像推送到您的容器注册表。
 
-2.  **Push the image:**
-    Push the image to your container registry.
+```bash
+docker push crater-harbor.act.buaa.edu.cn/user-liujh24/minio-fileservice:latest
+```
 
-    ```bash
-    docker push crater-harbor.act.buaa.edu.cn/user-liujh24/minio-fileservice:latest
-    ```
+### 3. 构建、推送和部署文件服务
 
-### 3. Build, Push, and Deploy the File Service
+**构建 fileservice 镜像**：
+使用 `fileservice.Dockerfile` 构建镜像。替换为您自己的镜像名称。
 
-1.  **Build the fileservice image:**
-    Use the `fileservice.Dockerfile` to build the image. Replace the image name with your own.
+```bash
+docker build -t crater-harbor.act.buaa.edu.cn/user-liujh24/minio-fileservice:latest -f fileservice.Dockerfile .
+```
 
-    ```bash
-    docker build -t crater-harbor.act.buaa.edu.cn/user-liujh24/minio-fileservice:latest -f fileservice.Dockerfile .
-    ```
+**推送 fileservice 镜像**：
 
-2.  **Push the fileservice image:**
-    ```bash
-    docker push crater-harbor.act.buaa.edu.cn/user-liujh24/minio-fileservice:latest
-    ```
+```bash
+docker push crater-harbor.act.buaa.edu.cn/user-liujh24/minio-fileservice:latest
+```
 
-3.  **Deploy the service:**
-    Apply the manifest to deploy the file service into the `rag` namespace.
+**部署服务**：
+应用清单以将文件服务部署到 `rag` 命名空间。
 
-    ```bash
-    kubectl apply -f fileservice-deployment.yaml
-    ```
+```bash
+kubectl apply -f fileservice-deployment.yaml
+```
 
-    Check the status of the file service pod:
-    ```bash
-    kubectl get pods -l app=fileservice -n rag
-    ```
+检查文件服务 Pod 的状态：
 
-### 4. Build, Push, and Deploy the Document Parsing Service
+```bash
+kubectl get pods -l app=fileservice -n rag
+```
 
-This service fetches files from MinIO and splits them into chunks.
+### 4. 构建、推送和部署文档解析服务
 
-1.  **Build the parser image:**
-    Use the `parser.Dockerfile` to build the image. Replace the image name with your own.
+此服务从 MinIO 获取文件并将其分割成块。
 
-    ```bash
-    docker build -t crater-harbor.act.buaa.edu.cn/user-liujh24/minio-parser:latest -f parser.Dockerfile .
-    ```
+**构建 parser 镜像**：
+使用 `parser.Dockerfile` 构建镜像。替换为您自己的镜像名称。
 
-2.  **Push the parser image:**
-    ```bash
-    docker push crater-harbor.act.buaa.edu.cn/user-liujh24/minio-parser:latest
-    ```
+```bash
+docker build -t crater-harbor.act.buaa.edu.cn/user-liujh24/minio-parser:latest -f parser.Dockerfile .
+```
 
-3.  **Deploy the parser service:**
-    The `parser-deployment.yaml` is already configured with the correct image name. Apply the manifest:
+**推送 parser 镜像**：
 
-    ```bash
-    kubectl apply -f parser-deployment.yaml
-    ```
-    Check the status:
-    ```bash
-    kubectl get pods -l app=parser -n rag
-    ```
+```bash
+docker push crater-harbor.act.buaa.edu.cn/user-liujh24/minio-parser:latest
+```
 
-### 5. Build, Push, and Deploy the API Gateway Service
+**部署解析服务**：
+`parser-deployment.yaml` 已配置正确的镜像名称。应用清单：
 
-This service acts as the main entry point for the entire RAG system.
+```bash
+kubectl apply -f parser-deployment.yaml
+```
 
-1.  **Build the API gateway image:**
-    ```bash
-    docker build -t crater-harbor.act.buaa.edu.cn/user-liujh24/rag-api-gateway:latest -f api.Dockerfile .
-    ```
+检查状态：
 
-2.  **Push the API gateway image:**
-    ```bash
-    docker push crater-harbor.act.buaa.edu.cn/user-liujh24/rag-api-gateway:latest
-    ```
+```bash
+kubectl get pods -l app=parser -n rag
+```
 
-3.  **Deploy the API gateway service:**
-    ```bash
-    kubectl apply -f api-deployment.yaml
-    ```
-    Check the status:
-    ```bash
-    kubectl get pods -l app=api-gateway -n rag
-    ```
+### 5. 构建、推送和部署 API 网关服务
 
-### 6. Deploy the Embedding Model Service
+此服务充当整个 RAG 系统的主要入口点。
 
-This service runs a dedicated embedding model using the high-performance vLLM server.
+**构建 API 网关镜像**：
 
-**IMPORTANT:** Before you begin, ensure your Kubernetes cluster has nodes with available NVIDIA GPUs and the NVIDIA device plugin is installed.
+```bash
+docker build -t crater-harbor.act.buaa.edu.cn/user-liujh24/rag-api-gateway:latest -f api.Dockerfile .
+```
 
-1.  **Create a Hugging Face Token Secret:**
-    The vLLM server needs a Hugging Face token to download the model. Replace `YOUR_HF_TOKEN` with your actual token from [https://huggingface.co/settings/tokens](https://huggingface.co/settings/tokens).
+**推送 API 网关镜像**：
 
-    ```bash
-    kubectl create secret generic hf-token-secret --from-literal=token='xxx' -n rag
-    ```
+```bash
+docker push crater-harbor.act.buaa.edu.cn/user-liujh24/rag-api-gateway:latest
+```
 
-2.  **Build and Push the Embedding Service Image:**
-    Unlike other services, the embedding service is built using a custom `embedding.Dockerfile` for maximum hardware compatibility.
+**部署 API 网关服务**：
 
-    ```bash
-    docker build -t crater-harbor.act.buaa.edu.cn/user-liujh24/rag-embedding-service:latest -f embedding.Dockerfile .
-    ```
-    Push the newly built image to your registry:
-    ```bash
-    docker push crater-harbor.act.buaa.edu.cn/user-liujh24/rag-embedding-service:latest
-    ```
+```bash
+kubectl apply -f api-deployment.yaml
+```
 
-3.  **Deploy the Embedding Service:**
-    This command will create a Persistent Volume Claim for the model cache, the Deployment for the vLLM server, and a Service to expose it.
+检查状态：
 
-    ```bash
-    kubectl apply -f embedding-deployment.yaml
-    ```
+```bash
+kubectl get pods -l app=api-gateway -n rag
+```
 
-4.  **Check the Status:**
-    It may take several minutes for the pod to become ready as it needs to download the model and initialize the server.
+### 6. 部署嵌入模型服务
 
-    ```bash
-    # Check pod status
-    kubectl get pods -l app=embedding-service -n rag
+此服务使用高性能 vLLM 服务器运行专用嵌入模型。
+**重要提示**：在开始之前，请确保您的 Kubernetes 集群具有带可用 NVIDIA GPU 的节点，并且已安装 NVIDIA 设备插件。
 
-    # View logs to see download progress and server status
-    kubectl logs -f -l app=embedding-service -n rag
-    ```
+**创建 Hugging Face Token Secret**：
+vLLM 服务器需要一个 Hugging Face token 来下载模型。将 `YOUR_HF_TOKEN` 替换为您从 `https://huggingface.co/settings/tokens` 获取的实际 token。
+
+```bash
+kubectl create secret generic hf-token-secret --from-literal=token='xxx' -n rag
+```
+
+**构建并推送嵌入服务镜像**：
+与其他服务不同，嵌入服务使用自定义的 `embedding.Dockerfile` 构建，以实现最大的硬件兼容性。
+
+````bash
+docker build -t crater-harbor.act.buaa.edu.cn/user-liujh24/rag-embedding-service:latest -f embedding.Dockerfile .```
+
+将新构建的镜像推送到您的注册表：
+
+```bash
+docker push crater-harbor.act.buaa.edu.cn/user-liujh24/rag-embedding-service:latest
+````
+
+**部署嵌入服务**：
+此命令将创建一个模型缓存的持久卷声明 (Persistent Volume Claim)、vLLM 服务器的部署 (Deployment) 和暴露它的服务 (Service)。
+
+```bash
+kubectl apply -f embedding-deployment.yaml
+```
+
+**检查状态**：
+Pod 可能需要几分钟才能准备就绪，因为它需要下载模型并初始化服务器。
+
+```bash
+# 检查 Pod 状态
+kubectl get pods -l app=embedding-service -n rag
+# 查看日志以了解下载进度和服务器状态
+kubectl logs -f -l app=embedding-service -n rag
+```
 
 ### 7. 部署 Reranker 模型服务
 
-本服务用于提供重排序（rerank）能力，基于 BAAI/bge-reranker-base 模型，依赖 GPU 资源。
+本服务用于提供重排序（rerank）能力，基于 `BAAI/bge-reranker-base` 模型，依赖 GPU 资源。
 
-1.  **构建并推送 Reranker 服务镜像：**
-    
-    （如需自定义镜像，可参考 embedding 服务的构建方法，默认可直接使用预设镜像）
+**构建并推送 Reranker 服务镜像**：
+（如需自定义镜像，可参考 embedding 服务的构建方法，默认可直接使用预设镜像）
 
-2.  **部署 Reranker 服务：**
-    
-    ```bash
-    kubectl apply -f reranker-deployment.yaml
-    ```
+```bash
+# docker build -t crater-harbor.act.buaa.edu.cn/user-liujh24/rag-reranker-service:latest -f reranker.Dockerfile .
+# docker push crater-harbor.act.buaa.edu.cn/user-liujh24/rag-reranker-service:latest
+```
 
-3.  **检查服务状态：**
-    
-    ```bash
-    kubectl get pods -l app=reranker-service -n rag
-    kubectl logs -f -l app=reranker-service -n rag
-    ```
+**部署 Reranker 服务**：
 
-#### reranker 服务测试方法
+```bash
+kubectl apply -f reranker-deployment.yaml
+```
 
-1. 查询 NodePort：
+**检查服务状态**：
+
+```bash
+kubectl get pods -l app=reranker-service -n rag
+kubectl logs -f -l app=reranker-service -n rag
+```
+
+**Reranker 服务测试方法**
+
+**查询 NodePort**：
 
 ```bash
 kubectl get svc reranker-service -n rag
 ```
 
-2. 发送 rerank 请求（OpenAI API 格式）：
+**发送 rerank 请求 (OpenAI API 格式)**：
 
 ```bash
 curl -X POST http://<NodeIP>:<NodePort>/v1/rerank \
@@ -336,53 +232,53 @@ curl -X POST http://<NodeIP>:<NodePort>/v1/rerank \
 
 ### 8. 部署 LLM 模型服务
 
-本服务基于 Qwen/Qwen3-0.6B 模型，提供核心的语言模型能力。
+本服务基于 `Qwen/Qwen3-0.6B` 模型，提供核心的语言模型能力。
 
-1.  **部署 LLM 服务：**
-    
-    ```bash
-    kubectl apply -f llm-deployment.yaml
-    ```
+**部署 LLM 服务**：
 
-2.  **检查服务状态：**
-    
-    ```bash
-    kubectl get pods -l app=llm-service -n rag
-    kubectl logs -f -l app=llm-service -n rag
-    ```
+```bash
+kubectl apply -f llm-deployment.yaml
+```
 
-#### LLM 服务测试方法
+**检查服务状态**：
 
-1.  **查询 NodePort：**
-    
-    ```bash
-    kubectl get svc llm-service -n rag
-    ```
+```bash
+kubectl get pods -l app=llm-service -n rag
+kubectl logs -f -l app=llm-service -n rag
+```
 
-2.  **发送聊天补全请求（OpenAI API 格式）：**
-    
-    ```bash
-    curl -X POST http://<NodeIP>:<NodePort>/v1/chat/completions \
-      -H "Content-Type: application/json" \
-      -d '{
-        "model": "Qwen/Qwen3-0.6B",
-        "messages": [
-          {"role": "user", "content": "你好，请介绍一下你自己。"}
-        ]
-      }'
-    ```
+**LLM 服务测试方法**
+
+**查询 NodePort**：
+
+```bash
+kubectl get svc llm-service -n rag
+```
+
+**发送聊天补全请求 (OpenAI API 格式)**：
+
+```bash
+curl -X POST http://<NodeIP>:<NodePort>/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen/Qwen3-0.6B",
+    "messages": [
+      {"role": "user", "content": "你好，请介绍一下你自己。"}
+    ]
+  }'
+```
 
 ### 9. 部署 Milvus 服务
 
-Milvus 是向量数据库，用于存储和检索向量数据。本部署会自动连接已存在的 minio 服务（minio-service:9000），无需重复部署 MinIO。
+Milvus 是向量数据库，用于存储和检索向量数据。本部署会自动连接已存在的 minio 服务 (`minio-service:9000`)，无需重复部署 MinIO。
 
-1. **部署 Milvus 及其依赖（etcd）：**
+**部署 Milvus 及其依赖 (etcd)**：
 
 ```bash
 kubectl apply -f milvus-deployment.yaml
 ```
 
-2. **检查服务状态：**
+**检查服务状态**：
 
 ```bash
 kubectl get pods -l app=milvus-etcd -n rag
@@ -390,359 +286,288 @@ kubectl get pods -l app=milvus-standalone -n rag
 kubectl logs -f -l app=milvus-standalone -n rag
 ```
 
-3. **服务端口说明：**
-- gRPC 端口：19530（用于 SDK/客户端连接）
-- HTTP 端口：9091（用于健康检查和监控）
+**服务端口说明**：
 
-4. **MinIO 连接说明：**
-Milvus 会自动通过环境变量连接 rag 命名空间下的 minio-service，访问密钥为 minioadmin/minioadmin。
+* gRPC 端口：19530（用于 SDK/客户端连接）
+* HTTP 端口：9091（用于健康检查和监控）
+
+**MinIO 连接说明**：
+Milvus 会自动通过环境变量连接 `rag` 命名空间下的 `minio-service`，访问密钥为 `minioadmin/minioadmin`。
 
 如需外部访问 Milvus，可通过 NodePort 方式连接上述端口。
 
-#### Milvus 服务测试方法
+**Milvus 服务测试方法**
+可以在电脑上装一个 `attu` 来测试 Milvus 服务。
 
-你可以通过 `pymilvus` SDK 来测试 Milvus 服务。以下提供两种测试方法：
-
-**方法一：在 Kubernetes 集群内部测试（推荐）**
-
-这是最直接可靠的方法，它会在 `rag` 命名空间下启动一个临时的 Python Pod，安装 `pymilvus` 并尝试连接 Milvus。
-
-执行以下命令：
-
-```bash
-kubectl run -it --rm --image=python:3.9-slim --restart=Never milvus-test -n rag -- /bin/bash -c "pip install pymilvus && python -c \"
-import pymilvus
-try:
-    pymilvus.connections.connect(alias='default', host='milvus-service', port='19530')
-    print('Successfully connected to Milvus!')
-    print(f'Existing collections: {pymilvus.utility.list_collections()}')
-except Exception as e:
-    print(f'Failed to connect: {e}')
-finally:
-    if 'default' in pymilvus.connections.list_connections():
-        pymilvus.connections.disconnect('default')
-\""
-```
-如果看到 `Successfully connected to Milvus!` 和一个集合列表（可能为空），说明 Milvus 服务正常。
-
-**方法二：在本地机器上测试（通过 NodePort）**
-
-1.  **安装 `pymilvus` 客户端：**
-    
-    ```bash
-    pip install pymilvus
-    ```
-
-2.  **获取连接信息：**
-    
-    *   获取任一 Kubernetes节点的 IP 地址（`EXTERNAL-IP` 或 `INTERNAL-IP`）。
-        ```bash
-        kubectl get nodes -o wide
-        ```
-    *   获取 Milvus gRPC 服务的 NodePort。
-        ```bash
-        kubectl get svc milvus-service -n rag
-        ```
-        记下 `19530` 对应的端口号（例如 `3xxxx`）。
-
-3.  **创建并运行测试脚本：**
-    
-    创建一个名为 `test_milvus.py` 的文件，内容如下，并将 `<NodeIP>` 和 `<NodePort>` 替换为上一步获取的值。
-    
-    ```python
-    import pymilvus
-    
-    MILVUS_HOST = "<NodeIP>"       # 替换为你的节点 IP
-    MILVUS_PORT = "<NodePort>"   # 替换为 Milvus 的 NodePort
-    
-    try:
-        print(f"Connecting to Milvus at {MILVUS_HOST}:{MILVUS_PORT}...")
-        pymilvus.connections.connect(alias='default', host=MILVUS_HOST, port=str(MILVUS_PORT))
-        print("Successfully connected to Milvus!")
-        print(f"Existing collections: {pymilvus.utility.list_collections()}")
-    except Exception as e:
-        print(f"An error occurred: {e}")
-    finally:
-        if 'default' in pymilvus.connections.list_connections():
-            pymilvus.connections.disconnect('default')
-            print("Disconnected from Milvus.")
-    ```
-    
-    运行脚本：
-    ```bash
-    python test_milvus.py
-    ```
-
-### 10. Accessing the System via the API Gateway
-
-The **API Gateway** is the primary entry point to the system, exposed via `NodePort`. The other services (`fileservice`, `parser-service`) are now considered internal components.
-
-To find the port for the **API Gateway**, run:
-```bash
-kubectl get svc api-service -n rag
-```
-The main API Base URL for the entire system is `http://<your-node-ip>:<api-gateway-node-port>`.
-
-### Architecture Note (Security Improvement)
-
-For easier debugging, `fileservice-service` and `parser-service` are currently set to `NodePort`. In a production environment, you should change their type back to `ClusterIP` in their respective `.yaml` files, so they are not directly exposed to the internet. The API Gateway would be the only externally accessible component.
-
-## API Endpoints (via API Gateway)
-
-All requests should now go through the API Gateway.
-
-- **`POST /add_file_to_collection`** (Automated Workflow)
-  - This is the primary endpoint for adding knowledge to the system. It automates the upload -> parse -> store pipeline.
-  - **Form Data:**
-    - `file`: The document file to process.
-    - `collection_name`: The name of the knowledge base to add the document to.
-    - `create_collection_if_not_exists`: `true` (default) or `false`.
-  - **Example using curl:**
-    ```bash
-    curl -X POST http://<your-node-ip>:<api-gateway-node-port>/add_file_to_collection \
-      -F "file=@/path/to/your/document.txt" \
-      -F "collection_name=my_knowledge_base"
-    ```
-
-- **`POST /upload`** (Manual Step)
-  - Upload a file. To automatically trigger parsing, add the `?parse=true` query parameter.
-  - **Example (Upload only):**
-    ```bash
-    curl -X POST -F "file=@/path/to/your/file.txt" http://<your-node-ip>:<api-gateway-node-port>/upload
-    ```
-  - **Example (Upload and Parse):**
-    ```bash
-    curl -X POST -F "file=@/path/to/your/file.txt" "http://<your-node-ip>:<api-gateway-node-port>/upload?parse=true"
-    ```
-
-- **`GET /download/{file_name}`**
-  - Download a file.
-  - **Example:**
-    ```bash
-    curl http://<your-node-ip>:<api-gateway-node-port>/download/file.txt -o downloaded_file.txt
-    ```
-
-- **`DELETE /delete/{file_name}`**
-  - Delete a file.
-  - **Example:**
-    ```bash
-    curl -X DELETE http://<your-node-ip>:<api-gateway-node-port>/delete/file.txt
-    ```
-
-- **`POST /parse/{file_name}`**
-  - Manually trigger parsing for a file that already exists in MinIO.
-  - **Example:**
-    ```bash
-    curl -X POST http://<your-node-ip>:<api-gateway-node-port>/parse/test.txt
-    ```
-
-## Internal Service Testing
-## Service Testing (Debug Mode)
-
-For easier debugging, some internal services are temporarily exposed via `NodePort`.
-
-**Test the Embedding Service:**
-1.  Find the port assigned to the embedding service:
-    ```bash
-    kubectl get svc embedding-service -n rag
-    ```
-2.  In a new terminal, send a request to the `/v1/embeddings` endpoint. Replace `<your-node-ip>` and `<embedding-node-port>` with the correct values.
-    ```bash
-    curl http://<your-node-ip>:<embedding-node-port>/v1/embeddings \
-      -H "Content-Type: application/json" \
-      -d '{
-        "input": "This is a test sentence.",
-        "model": "BAAI/bge-small-en-v1.5"
-      }'
-    ``` 
-
-### 11. 部署 RAG 检索服务
+### 10. 部署 RAG 检索服务
 
 这个服务是整个 RAG 系统的核心，它基于 LangChain 构建，负责编排 embedding, reranker, llm 和 milvus 服务，实现完整的检索增强生成流程。
 
-1.  **构建并推送检索服务镜像：**
-    
-    ```bash
-    docker build -t crater-harbor.act.buaa.edu.cn/user-liujh24/rag-retriever-service:latest -f retriever.Dockerfile .
-    docker push crater-harbor.act.buaa.edu.cn/user-liujh24/rag-retriever-service:latest
-    ```
+**构建并推送检索服务镜像**：
 
-2.  **部署服务：**
-    
-    ```bash
-    kubectl apply -f retriever-deployment.yaml
-    ```
+```bash
+docker build -t crater-harbor.act.buaa.edu.cn/user-liujh24/rag-retriever-service:latest -f retriever.Dockerfile .
+docker push crater-harbor.act.buaa.edu.cn/user-liujh24/rag-retriever-service:latest
+```
 
-3.  **检查服务状态：**
-    
-    ```bash
-    kubectl get pods -l app=retriever-service -n rag
-    kubectl logs -f -l app=retriever-service -n rag
-    ```
+**部署服务**：
 
-#### 检索服务测试方法
+```bash
+kubectl apply -f retriever-deployment.yaml
+```
 
-你可以通过 `curl` 调用其 API 来测试整个 RAG 流程。
+**检查服务状态**：
 
-1.  **获取服务 NodePort：**
-    
-    ```bash
-    kubectl get svc retriever-service -n rag
-    ```
+```bash
+kubectl get pods -l app=retriever-service -n rag
+kubectl logs -f -l app=retriever-service -n rag
+```
 
-2.  **第一步：创建知识库（Collection）**
-    
-    ```bash
-    curl -X POST http://<NodeIP>:<NodePort>/create_collection \
-      -H "Content-Type: application/json" \
-      -d '{
-        "collection_name": "my_knowledge_base"
-      }'
-    ```
+**检索服务测试方法**
+你可以通过 curl 调用其 API 来测试整个 RAG 流程。
 
-3.  **第二步：向知识库添加文档**
-    
-    ```bash
-    curl -X POST http://<NodeIP>:<NodePort>/add_documents \
-      -H "Content-Type: application/json" \
-      -d '{
-        "collection_name": "my_knowledge_base",
-        "documents": [
-          "The Eiffel Tower is located in Paris, France.",
-          "The capital of Japan is Tokyo.",
-          "The Great Wall of China is one of the seven wonders of the world."
-        ]
-      }'
-    ```
+**获取服务 NodePort**：
 
-4.  **第三步：执行 RAG 生成**
-    
-    ```bash
-    curl -N -X POST http://<NodeIP>:<NodePort>/rag_generate \
-      -H "Content-Type: application/json" \
-      -d '{
-        "collection_name": "my_knowledge_base",
-        "query": "Where is the Eiffel Tower?"
-      }'
-    ```
-    
-    `-N` 参数用于接收流式响应。
+```bash
+kubectl get svc retriever-service -n rag
+```
 
-### 12. Deploy Horizontal Pod Autoscalers (Optional)
+**第一步：创建知识库 (Collection)**
 
-To enable automatic scaling based on load, you can deploy Horizontal Pod Autoscalers (HPA) for the stateless services.
+```bash
+curl -X POST http://<NodeIP>:<NodePort>/create_collection \
+  -H "Content-Type: application/json" \
+  -d '{
+    "collection_name": "my_knowledge_base"
+  }'
+```
 
-**Prerequisite:** Ensure the `resources.requests` are defined in the `api-deployment.yaml`, `fileservice-deployment.yaml`, `parser-deployment.yaml`, and `retriever-deployment.yaml` files, as HPA relies on these values to calculate CPU utilization.
+**第二步：向知识库添加文档**
 
-1.  **Deploy the HPAs:**
-    The following command applies the HPA configurations for all four services. The YAML files are configured with a low CPU threshold (e.g., 10%) for easy testing.
+```bash
+curl -X POST http://<NodeIP>:<NodePort>/add_documents \
+  -H "Content-Type: application/json" \
+  -d '{
+    "collection_name": "my_knowledge_base",
+    "documents": [
+      "The Eiffel Tower is located in Paris, France.",
+      "The capital of Japan is Tokyo.",
+      "The Great Wall of China is one of the seven wonders of the world."
+    ]
+  }'
+```
 
-    ```bash
-    kubectl apply -f api-hpa.yaml -f fileservice-hpa.yaml -f parser-hpa.yaml -f retriever-hpa.yaml
-    ```
+**第三步：执行 RAG 生成**
 
-2.  **Monitor the HPA Status:**
-    In a new terminal, run this command to watch the HPA status in real-time.
+```bash
+curl -N -X POST http://<NodeIP>:<NodePort>/rag_generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "collection_name": "my_knowledge_base",
+    "query": "Where is the Eiffel Tower?"
+  }'
+```
 
-    ```bash
-    kubectl get hpa -n rag -w
-    ```
-    You will see the current CPU utilization against the target (e.g., `8% / 10%`) and the number of replicas for each service.
+-N 参数用于接收流式响应。
 
-3.  **Generate Load for Testing:**
-    To trigger autoscaling, you need to send traffic to the API Gateway. Here is a PowerShell example that continuously calls the chat endpoint in a loop.
+### 11. 部署水平 Pod 自动伸缩 (可选)
 
-    ```powershell
-    # Make sure to replace <api-gateway-url> with the correct URL
-    while ($true) {
-        curl -N -X POST http://<api-gateway-url>/chat/completions `
-            -H "Content-Type: application/json" `
-            -d '{"model": "my_knowledge_base", "messages": [{"role": "user", "content": "hello"}]}' `
-            -ErrorAction SilentlyContinue
-        Start-Sleep -Milliseconds 100
-    }
-    ```
-    As you run this script, you should see the CPU usage in the monitor window increase past the target, and Kubernetes will automatically start new pods, increasing the `REPLICAS` count.
+为了实现基于负载的自动伸缩，您可以为无状态服务部署水平 Pod 自动伸缩器 (HPA)。
+**先决条件**：确保 `api-deployment.yaml`、`fileservice-deployment.yaml`、`parser-deployment.yaml` 和 `retriever-deployment.yaml` 文件中定义了 `resources.requests`，因为 HPA 依赖这些值来计算 CPU 利用率。
 
-### 12. 访问系统入口（API Gateway）
+**部署 HPA**：
+以下命令应用所有四个服务的 HPA 配置。YAML 文件配置了较低的 CPU 阈值（例如 10%）以便于测试。
 
-The **API Gateway** is the primary entry point to the system, exposed via `NodePort`. The other services (`fileservice`, `parser-service`) are now considered internal components.
+```bash
+kubectl apply -f api-hpa.yaml -f fileservice-hpa.yaml -f parser-hpa.yaml -f retriever-hpa.yaml
+```
 
-To find the port for the **API Gateway**, run:
+**监控 HPA 状态**：
+在一个新的终端中，运行此命令以实时观察 HPA 状态。
+
+````bash
+kubectl get hpa -n rag -w```
+您将看到每个服务的当前 CPU 利用率与目标（例如 8% / 10%）以及副本数量。
+
+**生成负载进行测试**：
+要触发自动伸缩，您需要向 API 网关发送流量。这是一个 PowerShell 示例，它在循环中持续调用聊天端点。
+
+```powershell
+# 确保替换 <api-gateway-url> 为正确的 URL
+while ($true) {
+    curl -N -X POST http://<api-gateway-url>/chat/completions -H "Content-Type: application/json" `
+        -d '{"model": "my_knowledge_base", "messages": [{"role": "user", "content": "hello"}]}' -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 100
+}
+````
+
+当您运行此脚本时，您应该会看到监控窗口中的 CPU 使用率超过目标，并且 Kubernetes 将自动启动新的 Pod，增加 `REPLICAS` 计数。
+
+---
+
+请参考各个 `*.yaml` 文件以获取每个组件的部署说明。在应用清单之前，请确保您已为 `api-service`、`fileservice`、`parser-service` 和 `retriever-service` 构建并将 Docker 镜像推送到您的 Kubernetes 集群可访问的注册表。
+
+## 系统 API 端点 (通过 API 网关)
+
+所有与 RAG 系统的交互都应通过 API 网关进行。它提供了一个清晰、高级的接口来管理知识库和执行查询。
+
+首先，找到 API 网关的 NodePort：
+
 ```bash
 kubectl get svc api-service -n rag
 ```
-The main API Base URL for the entire system is `http://<your-node-ip>:<api-gateway-node-port>`.
 
-### Architecture Note (Security Improvement)
+使用返回的 IP 和端口进行所有后续请求 (`http://<your-node-ip>:<api-gateway-node-port>`)。
 
-For easier debugging, `fileservice-service` and `parser-service` are currently set to `NodePort`. In a production environment, you should change their type back to `ClusterIP` in their respective `.yaml` files, so they are not directly exposed to the internet. The API Gateway would be the only externally accessible component.
+### 1. 知识库管理
 
-## API Endpoints (via API Gateway)
+**创建知识库**
+创建一个新的空知识库（Milvus 中的“集合”）。
 
-All requests should now go through the API Gateway.
+* **端点**：`POST /collections`
+* **请求体**：
 
-- **`POST /add_file_to_collection`** (Automated Workflow)
-  - This is the primary endpoint for adding knowledge to the system. It automates the upload -> parse -> store pipeline.
-  - **Form Data:**
-    - `file`: The document file to process.
-    - `collection_name`: The name of the knowledge base to add the document to.
-    - `create_collection_if_not_exists`: `true` (default) or `false`.
-  - **Example using curl:**
+  ```json
+  {
+    "collection_name": "my_new_kb"
+  }
+  ```
+* **示例**：
+
+  ```bash
+  curl -X POST http://<api-gateway-url>/collections \
+    -H "Content-Type: application/json" \
+    -d '{"collection_name": "my_new_kb"}'
+  ```
+
+**删除知识库**
+永久删除知识库及其所有内容。
+
+* **端点**：`DELETE /collections/{collection_name}`
+* **示例**：
+
+  ```bash
+  curl -X DELETE http://<api-gateway-url>/collections/my_new_kb
+  ```
+
+### 2. 添加内容
+
+**向知识库添加文件**
+这是添加新信息的主要管道。它自动处理文件上传、文本分割、嵌入和存储。
+
+* **端点**：`POST /add_file_to_collection`
+* **请求类型**：`multipart/form-data`
+* **表单字段**：
+
+  * `file`：要添加的文档（例如，`.txt`, `.md`）。
+  * `collection_name`：目标知识库。
+* **示例**：
+
+  ```bash
+  curl -X POST http://<api-gateway-url>/add_file_to_collection \
+    -F "file=@/path/to/your/document.txt" \
+    -F "collection_name=my_new_kb"
+  ```
+
+### 3. 提问 (RAG)
+
+**获取聊天补全**
+针对特定知识库提问并获取 RAG 驱动的答案。此端点设计为与 OpenAI Chat Completions API 格式兼容。
+
+* **端点**：`POST /chat/completions`
+
+* **请求体**：
+
+  * `model`：(必需) 要查询的知识库名称（例如，“my\_new\_kb”）。
+  * `messages`：消息列表，遵循 OpenAI 格式。最后一个“user”角色消息的内容用作查询。
+  * `stream`：(可选) 设置为 `true` 以获取流式响应。默认为 `false`。
+
+* **示例 (非流式)**：
+
+  ```bash
+  curl -X POST http://<api-gateway-url>/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+      "model": "my_new_kb",
+      "messages": [
+        {"role": "user", "content": "文档的主要主题是什么？"}
+      ],
+      "stream": false
+    }'
+  ```
+
+* **示例 (流式)**：
+
+  ```bash
+  curl -N -X POST http://<api-gateway-url>/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+      "model": "my_new_kb",
+      "messages": [
+        {"role": "user", "content": "用三点总结文档。"}
+      ],
+      "stream": true
+    }'
+  ```
+
+### 其他 API 网关暴露的 API 端点
+
+所有请求现在都应通过 API 网关进行。
+
+* `POST /add_file_to_collection` (自动化工作流)
+
+  * 这是向系统添加知识的主要端点。它自动化了上传 -> 解析 -> 存储的管道。
+  * **表单数据**：
+
+    * `file`：要处理的文档文件。
+    * `collection_name`：要添加文档的知识库名称。
+    * `create_collection_if_not_exists`：`true` (默认) 或 `false`。
+  * **示例 (使用 curl)**：
+
     ```bash
     curl -X POST http://<your-node-ip>:<api-gateway-node-port>/add_file_to_collection \
       -F "file=@/path/to/your/document.txt" \
       -F "collection_name=my_knowledge_base"
     ```
 
-- **`POST /upload`** (Manual Step)
-  - Upload a file. To automatically trigger parsing, add the `?parse=true` query parameter.
-  - **Example (Upload only):**
+* `POST /upload` (手动步骤)
+
+  * 上传文件。要自动触发解析，请添加 `?parse=true` 查询参数。
+  * **示例 (仅上传)**：
+
     ```bash
     curl -X POST -F "file=@/path/to/your/file.txt" http://<your-node-ip>:<api-gateway-node-port>/upload
     ```
-  - **Example (Upload and Parse):**
+  * **示例 (上传并解析)**：
+
     ```bash
     curl -X POST -F "file=@/path/to/your/file.txt" "http://<your-node-ip>:<api-gateway-node-port>/upload?parse=true"
     ```
 
-- **`GET /download/{file_name}`**
-  - Download a file.
-  - **Example:**
+* `GET /download/{file_name}`
+
+  * 下载文件。
+  * **示例**：
+
     ```bash
     curl http://<your-node-ip>:<api-gateway-node-port>/download/file.txt -o downloaded_file.txt
     ```
 
-- **`DELETE /delete/{file_name}`**
-  - Delete a file.
-  - **Example:**
+* `DELETE /delete/{file_name}`
+
+  * 删除文件。
+  * **示例**：
+
     ```bash
     curl -X DELETE http://<your-node-ip>:<api-gateway-node-port>/delete/file.txt
     ```
 
-- **`POST /parse/{file_name}`**
-  - Manually trigger parsing for a file that already exists in MinIO.
-  - **Example:**
+* `POST /parse/{file_name}`
+
+  * 手动触发 MinIO 中已存在文件的解析。
+  * **示例**：
+
     ```bash
     curl -X POST http://<your-node-ip>:<api-gateway-node-port>/parse/test.txt
     ```
 
-## Internal Service Testing
-## Service Testing (Debug Mode)
-
-For easier debugging, some internal services are temporarily exposed via `NodePort`.
-
-**Test the Embedding Service:**
-1.  Find the port assigned to the embedding service:
-    ```bash
-    kubectl get svc embedding-service -n rag
-    ```
-2.  In a new terminal, send a request to the `/v1/embeddings` endpoint. Replace `<your-node-ip>` and `<embedding-node-port>` with the correct values.
-    ```bash
-    curl http://<your-node-ip>:<embedding-node-port>/v1/embeddings \
-      -H "Content-Type: application/json" \
-      -d '{
-        "input": "This is a test sentence.",
-        "model": "BAAI/bge-small-en-v1.5"
-      }'
-    ``` 

@@ -1,0 +1,46 @@
+# ============================================================
+# 链路聚合 VirtualService
+# 当请求携带 x-call-depth header 且深度 >= 阈值时,
+# 将对 embedding/milvus/reranker 的调用重定向到 retriever
+# 的 /aggregate 聚合端点, 由 retriever 一站式完成子调用。
+# 这样将 N 跳网络调用缩减为 1 跳 + 本地聚合。
+# ============================================================
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: chain-aggregation-routing
+  namespace: act-test
+spec:
+  hosts:
+  - embedding-service.act-test.svc.cluster.local
+  - milvus-service.act-test.svc.cluster.local
+  - reranker-service.act-test.svc.cluster.local
+  http:
+  # 规则 1: 调用深度超阈值 → 重定向到 retriever 聚合端点
+  - name: "deep-chain-redirect"
+    match:
+    - headers:
+        x-call-depth:
+          regex: "[5-9]|[1-9][0-9]+"      # depth >= 5
+    timeout: 45s
+    retries:
+      attempts: 1
+      perTryTimeout: 40s
+      retryOn: 5xx,reset
+    rewrite:
+      uri: /aggregate
+    route:
+    - destination:
+        host: retriever-service.act-test.svc.cluster.local
+        port:
+          number: 80
+
+  # 规则 2: 默认路由 → 正常转发到各自服务
+  # 注意: Istio 会按 host 匹配, 这里的 default 仅作为兜底,
+  # 各服务自身的 VirtualService 优先级更高
+  - name: "default-passthrough"
+    route:
+    - destination:
+        host: embedding-service.act-test.svc.cluster.local
+        port:
+          number: 80

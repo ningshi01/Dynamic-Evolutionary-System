@@ -1,0 +1,65 @@
+# Gateway + VirtualService (含超时/重试/故障处理)
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: basic-gateway
+  namespace: act-test
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*"
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: api-vs
+  namespace: act-test
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - basic-gateway
+  http:
+  - timeout: 120s                         # 网关层总超时
+    retries:
+      attempts: 2                          # 网关级重试
+      perTryTimeout: 45s
+      retryOn: 5xx,reset,connect-failure
+    route:
+    - destination:
+        host: api-service.act-test.svc.cluster.local
+        port:
+          number: 80
+
+---
+# 网关入口的 DestinationRule (连接池 + 断路器)
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: api-gateway-circuit-breaker
+  namespace: act-test
+spec:
+  host: api-service.act-test.svc.cluster.local
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 200
+        connectTimeout: 10s
+      http:
+        http1MaxPendingRequests: 100
+        http2MaxRequests: 200
+        maxRequestsPerConnection: 20
+        maxRetries: 3
+        idleTimeout: 120s
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 15s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 30
+      minHealthPercent: 50

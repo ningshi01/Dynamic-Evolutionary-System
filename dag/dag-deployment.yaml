@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dag-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dag-role
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "patch", "update"]
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list"]
+- apiGroups: ["networking.istio.io"]
+  resources: ["destinationrules", "virtualservices", "envoyfilters"]
+  verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dag-rb
+subjects:
+- kind: ServiceAccount
+  name: dag-sa
+roleRef:
+  kind: Role
+  name: dag-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dag-ui
+  labels:
+    app: dag-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dag-ui
+  template:
+    metadata:
+      labels:
+        app: dag-ui
+    spec:
+      serviceAccountName: dag-sa
+      containers:
+      - name: dag-ui
+        # image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/rag-dag:0304v4
+        image: gpu-harbor.act.buaa.edu.cn/user-wangxi25/rag-dag:0304v5
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PROMETHEUS_URL
+          value: "http://prometheus.istio-system.svc.cluster.local:9090"
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CRITICAL_PATH_INTERVAL
+          value: "300"
+        - name: CRITICAL_PATH_RESOURCE_BOOST
+          value: "1.2"
+        - name: CRITICAL_PATH_AUTO_APPLY
+          value: "false"
+        - name: CHAIN_LENGTH_THRESHOLD
+          value: "5"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dag-ui
+spec:
+  selector:
+    app: dag-ui
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: LoadBalancer
